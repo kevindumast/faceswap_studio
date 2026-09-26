@@ -1,72 +1,40 @@
-"""Télécharge les poids dans models/ : pack buffalo_l (détection + ArcFace) et inswapper_128.
+"""Télécharge les poids dans models/.
 
-Usage : python scripts/download_models.py
+Usage :
+  python scripts/download_models.py                # base : détection + ArcFace + inswapper (niveau 1)
+  python scripts/download_models.py --level tone   # + segmentation du visage (niveau 2 : teint)
+  python scripts/download_models.py --all
+
 Licence : modèles InsightFace = usage non commercial uniquement.
 """
 from __future__ import annotations
 
+import argparse
 import sys
-import urllib.request
-import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from src.config import load_config  # noqa: E402
+from src import models  # noqa: E402
 
-
-def fetch(url: str, dst: Path) -> None:
-    tmp = dst.with_suffix(dst.suffix + ".part")
-    req = urllib.request.Request(url, headers={"User-Agent": "faceswap-studio"})
-    with urllib.request.urlopen(req, timeout=60) as resp, open(tmp, "wb") as f:
-        total = int(resp.headers.get("Content-Length") or 0)
-        done = 0
-        while chunk := resp.read(1 << 20):
-            f.write(chunk)
-            done += len(chunk)
-            if total:
-                print(f"\r  {dst.name} : {done / total:6.1%} ({done >> 20} / {total >> 20} Mo)", end="", flush=True)
-    print()
-    tmp.replace(dst)
+GROUPS = {"base": "détection + ArcFace + inswapper", "tone": "segmentation du visage (BiSeNet)"}
 
 
 def main() -> None:
-    cfg = load_config()
-    models = cfg.path("models")
-    models.mkdir(parents=True, exist_ok=True)
-
-    pack = models / cfg.models.detector_pack
-    if any(pack.glob("*.onnx")):
-        print(f"✓ {pack.name} déjà présent")
-    else:
-        zip_path = models / f"{pack.name}.zip"
-        print(f"↓ {pack.name}")
-        fetch(cfg.models.buffalo_l_url, zip_path)
-        pack.mkdir(exist_ok=True)
-        with zipfile.ZipFile(zip_path) as z:
-            for member in z.namelist():
-                if member.endswith(".onnx"):
-                    (pack / Path(member).name).write_bytes(z.read(member))
-        zip_path.unlink()
-        print(f"✓ {pack.name} : {', '.join(p.name for p in pack.glob('*.onnx'))}")
-
-    swapper = models / cfg.models.inswapper
-    if swapper.is_file():
-        print(f"✓ {swapper.name} déjà présent")
-        return
-    for url in cfg.models.inswapper_urls:
-        print(f"↓ {swapper.name} depuis {url.split('/')[2]}")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--level", choices=[g for g in GROUPS if g != "base"], help="groupe supplémentaire")
+    ap.add_argument("--all", action="store_true")
+    args = ap.parse_args()
+    groups = list(GROUPS) if args.all else ["base"] + ([args.level] if args.level else [])
+    for group in groups:
+        if models.is_ready(group):
+            print(f"✓ {group} ({GROUPS[group]}) déjà présent")
+            continue
+        print(f"↓ {group} ({GROUPS[group]})")
         try:
-            fetch(url, swapper)
-        except Exception as exc:  # miroir mort : on essaie le suivant
-            print(f"  échec : {exc}")
-            continue
-        if swapper.stat().st_size < 400 << 20:
-            print("  fichier trop petit, miroir suspect")
-            swapper.unlink()
-            continue
-        print(f"✓ {swapper.name}")
-        return
-    sys.exit("Aucun miroir n'a fonctionné : ajoutez une URL valide dans config.yaml (models.inswapper_urls).")
+            models.ensure(group, lambda f: print(f"\r  {f:6.1%}", end="", flush=True))
+        except models.DownloadError as exc:
+            sys.exit(f"\n{exc}")
+        print(f"\n✓ {group}")
 
 
 if __name__ == "__main__":

@@ -13,8 +13,18 @@ from pydantic import BaseModel, Field
 from app import db
 from src.config import load_config
 
+from src.levels import CHARACTER, FACE, FACE_TONE, models_ready
+
 from .common import get_or_404, not_found
 from .routes_faces import person_ids
+
+# Niveaux livrés à ce stade (phase A) ; le niveau 3 et le niveau 4 arrivent dans les phases suivantes.
+AVAILABLE_LEVELS = (FACE, FACE_TONE)
+
+
+def gpu_configured() -> bool:
+    """ZeroGPU branché ? (phase B ; tant qu'il n'existe pas, l'option GPU est refusée proprement)."""
+    return bool(db.get_meta("zerogpu_space"))
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -39,7 +49,24 @@ class JobIn(BaseModel):
     ai_label: bool = True
     mappings: list[Mapping] = Field(default_factory=list, max_length=8)
     target: Target | None = None  # ancien format : un seul visage, toutes les photos
+    level: Literal["face", "face_tone", "head", "character"] = "face"
+    use_gpu: bool = False         # jamais implicite : CPU sauf case cochée par l'utilisateur
+    resolution: Literal["360p", "480p"] = "360p"  # niveau 4 uniquement
     consent: bool = False
+
+
+def check_level(level: str, use_gpu: bool, active_mappings: int) -> None:
+    """Refuse ce qui ne peut pas tourner, sans jamais basculer d'un moteur à l'autre à la place de l'utilisateur."""
+    if level == CHARACTER and not use_gpu:
+        raise HTTPException(422, "Le niveau 4 (personne entière) nécessite l'option GPU.")
+    if use_gpu and not gpu_configured():
+        raise HTTPException(422, "Aucun GPU ZeroGPU n'est branché : décoche l'option GPU ou configure-le dans « Moteur ».")
+    if level not in AVAILABLE_LEVELS:
+        raise HTTPException(422, "Ce niveau n'est pas encore disponible.")
+    if level == CHARACTER and active_mappings != 1:
+        raise HTTPException(422, "Le niveau 4 remplace une seule personne à la fois.")
+    if not use_gpu and not models_ready(level):
+        raise HTTPException(422, "Les modèles de ce niveau ne sont pas installés (bouton « Installer » à l'étape Visages).")
 
 
 def public(job: dict) -> dict:
@@ -54,6 +81,8 @@ def public(job: dict) -> dict:
         rate = elapsed / job["done"]
         eta = rate * max(job["total"] - job["done"], 0) + 5
     params.setdefault("mappings", [])
+    params.setdefault("level", FACE)
+    params.setdefault("use_gpu", False)
     video = db.get("videos", job["video_id"])
     if params["output"] == "full" and video:
         before = f"/api/videos/{job['video_id']}/proxy.mp4"
@@ -108,6 +137,7 @@ def create_job(body: JobIn) -> dict:
     unknown = {m.person for m in body.mappings} - known
     if unknown:
         raise HTTPException(422, f"Personne(s) inconnue(s) : {', '.join(sorted(unknown))}.")
+    check_level(body.level, body.use_gpu, len(body.mappings))
 
     job_id = db.new_id()
     params = body.model_dump(exclude={"video_id", "face_set_id", "consent"})

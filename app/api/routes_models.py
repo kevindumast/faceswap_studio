@@ -1,0 +1,81 @@
+"""Niveaux disponibles et installation des modèles depuis l'interface (téléchargement en tâche de fond)."""
+from __future__ import annotations
+
+import json
+
+from fastapi import APIRouter, HTTPException
+
+from app import db
+from src import models
+from src.config import load_config
+from src.levels import CHARACTER, FACE, FACE_TONE, HEAD, MODEL_GROUPS
+
+from .common import background
+
+router = APIRouter(prefix="/api/models", tags=["models"])
+
+# Taille approximative à télécharger par groupe (affichée sur le bouton « Installer »).
+GROUP_MB = {"base": 850, "tone": 94}
+
+
+def _download_state(group: str) -> dict | None:
+    raw = db.get_meta(f"download:{group}")
+    return json.loads(raw) if raw else None
+
+
+def sec_per_frame(level: str) -> float:
+    """Vitesse CPU mesurée sur cette machine (ramenée à un visage), sinon l'estimation de config.yaml."""
+    measured = db.get_meta(f"spf:{level}:cpu")
+    if measured:
+        return float(measured)
+    if level == FACE:  # mesures faites avant l'existence des niveaux
+        legacy = db.get_meta("sec_per_frame_single") or db.last_sec_per_frame()
+        if legacy:
+            return float(legacy)
+    levels = load_config().get("levels", {})
+    return float(levels.get(level, {}).get("sec_per_frame", 2.2))
+
+
+def levels_status(available: tuple[str, ...]) -> dict:
+    out = {}
+    for level in (FACE, FACE_TONE, HEAD, CHARACTER):
+        groups = MODEL_GROUPS.get(level, ())
+        missing = [g for g in groups if not models.is_ready(g)]
+        downloads = {g: _download_state(g) for g in missing}
+        out[level] = {
+            "available": level in available,
+            "gpu_only": level == CHARACTER,
+            "ready": level in available and not missing,
+            "missing_groups": missing,
+            "install_mb": sum(GROUP_MB.get(g, 0) for g in missing),
+            "installing": next((d for d in downloads.values() if d and d.get("running")), None),
+            "install_error": next((d["error"] for d in downloads.values() if d and d.get("error")), None),
+            "sec_per_frame": sec_per_frame(level),
+        }
+    return out
+
+
+def _run_download(group: str) -> None:
+    last = [0.0]
+
+    def on_progress(frac: float) -> None:
+        if frac - last[0] >= 0.01 or frac >= 1:
+            last[0] = frac
+            db.set_meta(f"download:{group}", json.dumps({"running": True, "progress": round(frac, 3)}))
+
+    try:
+        models.ensure(group, on_progress)
+        db.set_meta(f"download:{group}", json.dumps({"running": False, "progress": 1}))
+    except Exception as exc:
+        db.set_meta(f"download:{group}", json.dumps({"running": False, "progress": 0, "error": str(exc)[:300]}))
+
+
+@router.post("/{group}/download")
+def download(group: str) -> dict:
+    if group not in GROUP_MB:
+        raise HTTPException(404, "Groupe de modèles inconnu.")
+    state = _download_state(group)
+    if not (state and state.get("running")) and not models.is_ready(group):
+        db.set_meta(f"download:{group}", json.dumps({"running": True, "progress": 0}))
+        background.submit(_run_download, group)
+    return {"group": group, "ready": models.is_ready(group), "state": _download_state(group)}

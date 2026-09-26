@@ -58,6 +58,19 @@ export type Target = { t: number; box: Box };
 /** Un visage du clip → une personne source. person = null : visage laissé intact (choix explicite). */
 export type Mapping = Target & { person: string | null };
 
+export type Level = "face" | "face_tone" | "head" | "character";
+
+export type LevelStatus = {
+  available: boolean;
+  gpu_only: boolean;
+  ready: boolean;
+  missing_groups: string[];
+  install_mb: number;
+  installing: { running: boolean; progress: number } | null;
+  install_error: string | null;
+  sec_per_frame: number;
+};
+
 export type JobParams = {
   start: number;
   end: number;
@@ -66,6 +79,9 @@ export type JobParams = {
   ai_label: boolean;
   mappings: (Target & { person: string })[];
   target?: Target | null;
+  level: Level;
+  use_gpu: boolean;
+  resolution?: "360p" | "480p";
 };
 
 export type Job = {
@@ -100,6 +116,8 @@ export type Status = {
   upload_max_mb: number;
   video_ext: string[];
   sec_per_frame: number;
+  levels: Record<Level, LevelStatus>;
+  gpu: { configured: boolean };
   example_url: string;
   youtube_max_duration_s: number;
 };
@@ -157,6 +175,7 @@ function upload<T>(url: string, form: FormData, onProgress?: (frac: number) => v
 
 export const api = {
   status: () => request<Status>("GET", "/api/status"),
+  installModels: (group: string) => request<{ ready: boolean }>("POST", `/api/models/${group}/download`),
 
   videos: () => request<Video[]>("GET", "/api/videos"),
   video: (id: string) => request<Video>("GET", `/api/videos/${id}`),

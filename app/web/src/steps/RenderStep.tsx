@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, ArrowRight, Check, Clapperboard, Cpu, Download, Film, Loader2, RotateCcw, Scissors, Sparkles, Wand2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Clapperboard, Cpu, Download, Film, Loader2, RotateCcw, Scissors, Sparkles, Wand2, X, Zap } from "lucide-react";
 import { useState } from "react";
-import { ApiError, api, type Job, type JobParams, type Mapping, type Status, type Video } from "../lib/api";
+import { ApiError, api, type Job, type JobParams, type Level, type Mapping, type Status, type Video } from "../lib/api";
+import { levelInfo } from "../lib/levels";
 import { personColor, sameBox } from "../lib/people";
 import { duration, seconds, timecode } from "../lib/time";
 import { Button, Card, Notice, ProgressBar, SectionTitle, SegmentedControl, Switch, cx } from "../components/ui";
@@ -16,6 +17,7 @@ type Props = {
   selection: Selection;
   faceSetId: string;
   mappings: Mapping[];
+  level: Level;
   consent: boolean;
   jobId: string | null;
   onJob: (id: string | null) => void;
@@ -77,13 +79,18 @@ function Setup(p: Props) {
   const [output, setOutput] = useState<JobParams["output"]>("segment");
   const [stabilize, setStabilize] = useState(true);
   const [aiLabel, setAiLabel] = useState(true);
+  // Jamais coché d'office ni mémorisé : le GPU ne consomme du quota que si on le demande pour CE rendu.
+  const [useGpu, setUseGpu] = useState(false);
+  const info = levelInfo(p.level);
   const fps = p.video.info!.fps;
   const len = p.selection.end - p.selection.start;
   const frames = Math.round(len * fps);
   const active = p.mappings.filter((m): m is Mapping & { person: string } => !!m.person);
   // Le swap domine le temps de calcul : chaque visage remplacé en plus coûte ~75 % d'une passe.
   const swapFactor = 1 + 0.75 * Math.max(0, active.length - 1);
-  const spf = p.status?.sec_per_frame ?? 2.2;
+  const spf = p.status?.levels[p.level]?.sec_per_frame ?? p.status?.sec_per_frame ?? 2.2;
+  const gpuConfigured = !!p.status?.gpu.configured;
+  const blockedByGpu = !!info.gpuOnly && !useGpu;
   // Mode « vidéo complète » : le reste du clip est seulement réencodé (≈ 4× plus vite que le temps réel).
   const fullExtra = p.video.info!.duration * 0.25;
   const estimate = frames * spf * swapFactor + 15 + (output === "full" ? fullExtra : 0);
@@ -108,6 +115,8 @@ function Setup(p: Props) {
         stabilize,
         ai_label: aiLabel,
         mappings: active.map(({ t, box, person }) => ({ t, box, person })),
+        level: p.level,
+        use_gpu: useGpu,
         consent: p.consent,
       }),
     onSuccess: (j) => {
@@ -128,6 +137,10 @@ function Setup(p: Props) {
           <dl className="divide-y divide-line text-sm">
             <Row label="Vidéo">
               <span className="line-clamp-1">{p.video.title}</span>
+            </Row>
+            <Row label="Niveau">
+              <span className="mr-2 rounded-md bg-accent-soft px-1.5 py-0.5 font-mono text-[11px] text-accent">Niv. {info.step}</span>
+              {info.title}
             </Row>
             <Row label="Passage">
               <span className="font-mono tabular">
@@ -191,7 +204,11 @@ function Setup(p: Props) {
           <div className="space-y-3 border-t border-line pt-4">
             <Switch checked={stabilize} onChange={setStabilize} label="Stabilisation" description="Lisse les tremblements du visage d'une image à l'autre." />
             <Switch checked={aiLabel} onChange={setAiLabel} label="Étiquette « Contenu modifié par IA »" description="Petite mention en bas à droite, recommandée pour publier." />
+            {!aiLabel && info.step >= 2 && (
+              <Notice tone="warn">Plus le rendu est réaliste, plus l'étiquette compte : sans elle, la vidéo peut passer pour vraie une fois partagée.</Notice>
+            )}
           </div>
+          <GpuOption checked={useGpu} onChange={setUseGpu} configured={gpuConfigured} required={!!info.gpuOnly} />
           <div className="mt-auto pt-6">
             {p.status && !p.status.worker && (
               <Notice tone="warn" className="mb-4">
@@ -214,13 +231,55 @@ function Setup(p: Props) {
                   {output === "full" ? ` + ${duration(fullExtra)} recopie` : ""}
                 </div>
               </div>
-              <Button variant="primary" size="lg" loading={launch.isPending} disabled={!active.length} onClick={() => launch.mutate()} icon={<Wand2 className="size-4" />}>
+              <Button
+                variant="primary"
+                size="lg"
+                loading={launch.isPending}
+                disabled={!active.length || blockedByGpu}
+                title={blockedByGpu ? "Ce niveau nécessite l'option GPU" : undefined}
+                onClick={() => launch.mutate()}
+                icon={<Wand2 className="size-4" />}
+              >
                 Lancer le rendu
               </Button>
             </div>
           </div>
         </Card>
       </div>
+    </div>
+  );
+}
+
+/** Option GPU : décochée par défaut, grisée tant qu'aucun GPU n'est branché, jamais cochée à la place de l'utilisateur. */
+function GpuOption({ checked, onChange, configured, required }: { checked: boolean; onChange: (v: boolean) => void; configured: boolean; required: boolean }) {
+  return (
+    <div className="mt-4 border-t border-line pt-4">
+      <label className={cx("flex items-start gap-3", configured ? "cursor-pointer" : "cursor-not-allowed opacity-60")}>
+        <input type="checkbox" checked={checked} disabled={!configured} onChange={(e) => onChange(e.target.checked)} className="peer sr-only" />
+        <span
+          className={cx(
+            "mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-md ring-1 transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-accent",
+            checked ? "bg-accent text-accent-ink ring-accent" : "bg-bg ring-line-strong",
+          )}
+        >
+          {checked && <Check className="size-3.5" strokeWidth={3} />}
+        </span>
+        <span>
+          <span className="flex items-center gap-1.5 text-sm font-medium">
+            <Zap className="size-3.5 text-warn" /> Utiliser le GPU (ZeroGPU)
+          </span>
+          <span className="mt-0.5 block text-[13px] text-muted">
+            {configured
+              ? "Plus rapide, mais consomme ton quota ZeroGPU. Décoché : calcul sur ton CPU."
+              : "Aucun GPU branché : le calcul se fait sur ton CPU."}
+          </span>
+        </span>
+      </label>
+      {required && !checked && (
+        <Notice tone="warn" className="mt-3">
+          Ce niveau ne peut tourner que sur GPU : coche l'option{configured ? "" : " (après avoir branché ZeroGPU)"} pour lancer le rendu.
+        </Notice>
+      )}
     </div>
   );
 }

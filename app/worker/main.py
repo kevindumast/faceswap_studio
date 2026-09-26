@@ -10,7 +10,8 @@ import traceback
 from pathlib import Path
 
 from app import db
-from app.api.routes_faces import load_source_face
+from app.api.routes_faces import load_person_assets
+from src.levels import FACE
 from src.pipeline import Cancelled, FaceMapping, RenderOptions, render
 
 
@@ -22,18 +23,19 @@ def run_job(job: dict) -> None:
     if video is None:
         raise RuntimeError("La vidéo source a été supprimée.")
     params = job["params"]
+    level = params.get("level") or FACE
     opts = RenderOptions(start=params["start"], end=params["end"], output=params["output"],
-                         stabilize=params["stabilize"], ai_label=params["ai_label"])
+                         stabilize=params["stabilize"], ai_label=params["ai_label"], level=level)
     set_id = job["face_set_id"]
     if params.get("mappings"):
-        # Une identité par personne, chargée une seule fois même si elle remplace plusieurs visages.
-        sources = {p: load_source_face(set_id, p) for p in {m["person"] for m in params["mappings"]}}
+        # Données préparées une seule fois par personne, même si elle remplace plusieurs visages.
+        people = {p: load_person_assets(set_id, p, level) for p in {m["person"] for m in params["mappings"]}}
         mappings = [
-            FaceMapping(source=sources[m["person"]], target={"t": m["t"], "box": m["box"]}, label=f"Visage {i + 1} (personne {m['person']})")
+            FaceMapping(people[m["person"]], target={"t": m["t"], "box": m["box"]}, label=f"Visage {i + 1} (personne {m['person']})")
             for i, m in enumerate(params["mappings"])
         ]
     else:  # ancien format : toutes les photos → un seul visage
-        mappings = [FaceMapping(source=load_source_face(set_id), target=params.get("target"))]
+        mappings = [FaceMapping(load_person_assets(set_id, None, level), target=params.get("target"))]
     last = [0.0]
 
     def progress(stage: str, done: int, total: int) -> None:
@@ -56,10 +58,10 @@ def run_job(job: dict) -> None:
         preview=out / "preview.jpg",
     )
     (out / "swapped.mp4").unlink(missing_ok=True)
-    # Vitesse ramenée à un seul visage, pour que l'estimation des prochains rendus reste juste
+    # Vitesse ramenée à un seul visage et mémorisée par (niveau, moteur), pour que les estimations restent justes
     # (même formule que le frontend : chaque visage en plus ≈ +75 %).
     factor = 1 + 0.75 * max(0, len(mappings) - 1)
-    db.set_meta("sec_per_frame_single", str(stats.sec_per_frame / factor))
+    db.set_meta(f"spf:{level}:cpu", str(stats.sec_per_frame / factor))
     db.update("jobs", job_id, status="done", finished_at=time.time(), sec_per_frame=stats.sec_per_frame,
               warnings=stats.warnings, done=stats.frames, total=stats.frames)
 

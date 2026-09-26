@@ -32,6 +32,21 @@ cd app\web; npm run dev                        # front  → http://127.0.0.1:517
 
 Version « un seul serveur » : `cd app\web; npm run build`, puis seule l'API suffit (elle sert le front sur http://127.0.0.1:8000).
 
+## Niveaux de transformation
+
+Choisis à l'étape « Visages ». Tout tourne sur ton CPU ; le GPU (ZeroGPU) est une option à cocher à chaque rendu.
+
+| Niveau | Remplace | Moteur | Statut |
+|---|---|---|---|
+| 1. Visage | traits du visage (inswapper) | CPU | ✓ |
+| 2. Visage + teint | + teint du visage, des oreilles et du cou (BiSeNet + transfert LAB) | CPU | ✓ (`--level tone`, 94 Mo, installable depuis l'UI) |
+| 3. Tête complète | tête entière : cheveux, forme, teint (LivePortrait + LaMa) | CPU | à venir |
+| 4. Personne entière | tête + corps + habits d'une photo en pied (Wan2.2-Animate) | GPU uniquement | à venir |
+
+Niveau 2 : la zone recolorée combine la segmentation, une zone autour du visage (ellipse + cou) et un filtre couleur
+calé sur le cœur du visage, pour ne jamais teinter la chemise ou le décor. Yeux, bouche, lunettes, cheveux et bijoux
+ne sont jamais touchés. Les mains et les bras gardent leur couleur d'origine.
+
 ## Plusieurs personnes
 
 À l'étape « Visages », les photos importées sont **rangées automatiquement par personne** (A, B, C…) en comparant
