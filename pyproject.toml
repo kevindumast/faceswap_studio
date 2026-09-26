@@ -1,0 +1,23 @@
+[project]
+name = "faceswap-studio"
+version = "0.1.0"
+description = "Pipeline de face swap vidéo perso (parodie) + appli web locale"
+requires-python = ">=3.10,<3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "python-multipart",
+    "pyyaml",
+    "yt-dlp",
+    "insightface",
+    "onnxruntime",
+    "onnx",
+    "opencv-python-headless",
+    "numpy",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "httpx"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

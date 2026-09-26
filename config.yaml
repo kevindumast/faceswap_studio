@@ -1,0 +1,57 @@
+# Configuration du pipeline et de l'appli. Tous les chemins sont relatifs à la racine du repo.
+
+device: cpu            # cpu | cuda  (cuda = onnxruntime-gpu requis)
+det_size: 640          # taille d'entrée du détecteur (320 = plus rapide, moins précis)
+
+paths:
+  models: models
+  data: data
+
+ffmpeg: ffmpeg         # ou chemin complet vers ffmpeg.exe
+ffprobe: ffprobe
+
+models:
+  detector_pack: buffalo_l
+  buffalo_l_url: https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip
+  inswapper: inswapper_128.onnx
+  inswapper_urls:
+    - https://huggingface.co/ezioruan/inswapper_128.onnx/resolve/main/inswapper_128.onnx
+    - https://huggingface.co/datasets/Gourieff/ReActor/resolve/main/models/inswapper_128.onnx
+
+segment:
+  min_s: 5
+  max_s: 30
+
+upload:
+  max_mb: 500
+  video_ext: [.mp4, .mov, .webm, .mkv, .m4v]
+  photo_ext: [.jpg, .jpeg, .png, .webp]
+  photo_max_mb: 15
+
+photos:
+  max: 20
+
+youtube:
+  example_url: https://www.youtube.com/watch?v=x9yop0nYR9g   # proposé comme exemple dans l'UI
+  max_duration_s: 900
+  max_height: 720
+
+render:
+  max_height: 1080             # au-delà, la vidéo est réduite avant le swap (CPU)
+  crf: 18
+  preset: veryfast
+  similarity_threshold: 0.28   # similarité cosinus minimale avec le visage cible
+  smoothing: 0.6               # EMA des landmarks (0 = aucun lissage, 0.9 = très lissé)
+  preview_every: 8             # frames entre deux aperçus live
+  default_sec_per_frame: 2.2   # estimation CPU avant le premier job mesuré (i7 4 cœurs ≈ 2,2 s)
+
+proxy:
+  max_height: 720
+  filmstrip_count: 60
+  filmstrip_height: 90
+
+retention_hours: 48
+
+server:
+  host: 127.0.0.1
+  port: 8000
