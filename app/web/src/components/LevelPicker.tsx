@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { AlertTriangle, Check, Cpu, Download, FlaskConical, Palette, PersonStanding, ScanFace, UserRound, Zap } from "lucide-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { api, type Level, type Status } from "../lib/api";
 import { LEVELS, levelInfo } from "../lib/levels";
 import { Button, Notice, ProgressBar, cx } from "./ui";
@@ -13,14 +13,23 @@ const ICONS: Record<Level, ReactNode> = {
   character: <PersonStanding className="size-5" />,
 };
 
+const COMING: Partial<Record<Level, string>> = {
+  head: "Pas encore disponible : la tête complète arrive dans une prochaine étape.",
+  character: "Pas encore disponible : arrive juste après le branchement du GPU ZeroGPU, qui est indispensable à ce niveau.",
+};
+
 export function LevelPicker({ value, onChange, status }: { value: Level; onChange: (l: Level) => void; status?: Status }) {
   const qc = useQueryClient();
   const install = useMutation({
     mutationFn: (groups: string[]) => Promise.all(groups.map((g) => api.installModels(g))),
     onSettled: () => qc.invalidateQueries({ queryKey: ["status"] }),
   });
-  const selected = levelInfo(value);
-  const st = status?.levels[value];
+  // Un niveau pas encore livré peut être consulté (détail + alertes) sans être sélectionné pour le rendu.
+  const [preview, setPreview] = useState<Level | null>(null);
+  const shown = preview ?? value;
+  const selected = levelInfo(shown);
+  const st = status?.levels[shown];
+  const locked = !!st && !st.available;
 
   return (
     <section className="mb-6">
@@ -33,17 +42,26 @@ export function LevelPicker({ value, onChange, status }: { value: Level; onChang
           const s = status?.levels[lvl.id];
           const available = s?.available ?? lvl.id === "face";
           const on = value === lvl.id;
+          const previewing = preview === lvl.id;
           return (
             <button
               key={lvl.id}
               role="radio"
               aria-checked={on}
-              disabled={!available}
-              onClick={() => onChange(lvl.id)}
+              aria-disabled={!available}
+              onClick={() => {
+                if (available) {
+                  setPreview(null);
+                  onChange(lvl.id);
+                } else {
+                  setPreview(previewing ? null : lvl.id);
+                }
+              }}
               className={cx(
-                "group relative flex flex-col gap-2 rounded-2xl p-4 text-left ring-1 transition-[box-shadow,background] disabled:cursor-not-allowed",
+                "group relative flex flex-col gap-2 rounded-2xl p-4 text-left ring-1 transition-[box-shadow,background]",
                 on ? "bg-accent-soft ring-2 ring-accent" : "bg-surface ring-line hover:ring-line-strong",
-                !available && "opacity-55",
+                !available && "border border-dashed border-line-strong opacity-70 ring-0",
+                previewing && "opacity-100 ring-1 ring-faint",
               )}
             >
               <div className="flex items-center justify-between">
@@ -85,13 +103,19 @@ export function LevelPicker({ value, onChange, status }: { value: Level; onChang
 
       <AnimatePresence mode="wait">
         <motion.div
-          key={value}
+          key={shown}
           initial={{ opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.15 }}
           className="mt-3 grid gap-4 rounded-2xl bg-surface p-4 ring-1 ring-line sm:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)] sm:p-5"
         >
+          {locked && (
+            <Notice tone="info" className="sm:col-span-2">
+              <span className="font-medium text-fg">Niveau {selected.step} · {selected.title}.</span> {COMING[shown] ?? "Pas encore disponible."}{" "}
+              Tu restes sur le niveau {levelInfo(value).step} pour tes rendus.
+            </Notice>
+          )}
           <div>
             <div className="mb-2 text-[12px] font-medium tracking-wide text-faint uppercase">Ce qui change</div>
             <ul className="space-y-1.5 text-[13px]">
