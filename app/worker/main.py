@@ -15,7 +15,7 @@ from app.worker.zerogpu_client import RemoteCancelled, ZeroGPUClient
 from src import media
 from src.config import accelerator
 from src.levels import FACE
-from src.pipeline import Cancelled, FaceMapping, RenderOptions, RenderStats, assemble, cut, relative_targets, render
+from src.pipeline import Cancelled, FaceMapping, Paused, RenderOptions, RenderStats, assemble, cut, relative_targets, render
 
 
 def remote_payload(params: dict, mappings: list[FaceMapping], start: float, length: float) -> dict:
@@ -95,8 +95,11 @@ def run_job(job: dict) -> None:
         if stage == "swap" and done not in (1, total) and now - last[0] < 0.5:
             return
         last[0] = now
-        if db.job_status(job_id) == "cancelling":
+        status = db.job_status(job_id)
+        if status == "cancelling":
             raise Cancelled()
+        if status == "pausing":
+            raise Paused()
         db.update("jobs", job_id, stage=stage, done=done, total=total)
         db.set_meta("worker_heartbeat", str(now))
 
@@ -127,8 +130,12 @@ def run_job(job: dict) -> None:
 def main() -> None:
     db.init()
     for j in db.all_rows("jobs", 500):
-        if j["status"] in ("running", "cancelling"):
-            db.update("jobs", j["id"], status="error", error="Interrompu (worker redémarré).", finished_at=time.time())
+        if j["status"] in ("running", "cancelling", "pausing"):
+            if j["params"].get("use_gpu") or j["status"] == "cancelling":
+                db.update("jobs", j["id"], status="error", error="Interrompu (worker redémarré).", finished_at=time.time())
+            else:  # rendu local : le point de reprise permet de continuer où il s'était arrêté
+                db.update("jobs", j["id"], status="paused", error="Interrompu (worker ou PC redémarré) : clique sur Reprendre. "
+                          "Le calcul repart du dernier point enregistré (au plus ~2 min perdues).")
     print("Worker prêt, en attente de jobs…", flush=True)
     while True:
         db.set_meta("worker_heartbeat", str(time.time()))
@@ -143,6 +150,9 @@ def main() -> None:
         except Cancelled:
             db.update("jobs", job["id"], status="cancelled", finished_at=time.time())
             print(f"× job {job['id']} annulé", flush=True)
+        except Paused:
+            db.update("jobs", job["id"], status="paused")
+            print(f"‖ job {job['id']} en pause", flush=True)
         except Exception as exc:
             traceback.print_exc()
             db.update("jobs", job["id"], status="error", error=str(exc)[:500], finished_at=time.time())

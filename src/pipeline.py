@@ -8,8 +8,9 @@ CLI : python -m src.pipeline --video clip.mp4 --start 12 --end 20 --faces data/s
 from __future__ import annotations
 
 import argparse
+import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -32,6 +33,52 @@ class Cancelled(Exception):
 
 class RenderError(RuntimeError):
     pass
+
+
+class Paused(Exception):
+    """Pause demandée : le morceau en cours est refermé proprement et le point de reprise enregistré."""
+
+
+@dataclass
+class Checkpoint:
+    """Point de reprise d'un rendu local : morceaux déjà écrits + compteurs (work_dir/checkpoint.json).
+
+    Permet de mettre un rendu en pause, de fermer l'appli ou d'éteindre le PC, puis de reprendre à la même image.
+    """
+    path: Path
+    frames_done: int = 0
+    chunks: list[str] = field(default_factory=list)
+    swapped: int = 0
+    reused: int = 0
+    counts: dict[str, int] = field(default_factory=dict)
+    elapsed: float = 0.0                # temps de calcul cumulé sur toutes les sessions
+
+    @classmethod
+    def load(cls, work_dir: Path) -> "Checkpoint":
+        path = work_dir / "checkpoint.json"
+        if path.is_file():
+            return cls(path=path, **json.loads(path.read_text(encoding="utf-8")))
+        return cls(path=path)
+
+    def save(self) -> None:
+        data = {k: v for k, v in asdict(self).items() if k != "path"}
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(self.path)          # jamais de JSON à moitié écrit si le PC s'éteint à ce moment-là
+
+    def clear(self) -> None:
+        for name in self.chunks:
+            (self.path.parent / name).unlink(missing_ok=True)
+        self.path.unlink(missing_ok=True)
+
+
+def _tick(report: Progress, i: int, total: int) -> bool:
+    """Progression ; True si une pause a été demandée (on referme alors proprement le morceau en cours)."""
+    try:
+        report("swap", i, max(total, i))
+    except Paused:
+        return True
+    return False
 
 
 @dataclass
@@ -81,7 +128,7 @@ def validate_range(start: float, end: float, duration: float) -> None:
         raise RenderError(f"Le passage doit durer entre {seg.min_s} et {seg.max_s} s (actuellement {length:.1f} s).")
 
 
-def cut(source: Path, opts: RenderOptions, work_dir: Path) -> CutSegment:
+def cut(source: Path, opts: RenderOptions, work_dir: Path, reuse: bool = False) -> CutSegment:
     """Découpe précise du passage, à la taille de travail, avec le son d'origine."""
     rcfg = load_config().render
     info = media.probe(source)
@@ -90,8 +137,9 @@ def cut(source: Path, opts: RenderOptions, work_dir: Path) -> CutSegment:
     fps_str = media.capped_fps(info.fps_str, float(rcfg.get("fps_cap", 30))) if opts.limit_fps else info.fps_str
     work_dir.mkdir(parents=True, exist_ok=True)
     path = work_dir / "cut.mp4"
-    media.cut_segment(source, path, opts.start, opts.end, size, info.has_audio,
-                      fps_str if fps_str != info.fps_str else None)
+    if not (reuse and path.is_file()):  # reprise après une pause : l'extrait déjà découpé est réutilisé tel quel
+        media.cut_segment(source, path, opts.start, opts.end, size, info.has_audio,
+                          fps_str if fps_str != info.fps_str else None)
     return CutSegment(path, info, size, fps_str)
 
 
@@ -143,7 +191,7 @@ class DuplicateDetector:
 
 def swap_segment(clip: Path, mappings: list[FaceMapping], level: str, out: Path, *, stabilize: bool = True,
                  progress: Progress | None = None, preview: Path | None = None,
-                 stats: RenderStats | None = None) -> RenderStats:
+                 stats: RenderStats | None = None, checkpoint: Checkpoint | None = None) -> RenderStats:
     """Remplace les visages d'un extrait (instants des cibles relatifs à l'extrait). Écrit une vidéo sans son."""
     if not mappings:
         raise RenderError("Aucun visage à remplacer.")
@@ -174,25 +222,55 @@ def swap_segment(clip: Path, mappings: list[FaceMapping], level: str, out: Path,
     if not active:
         raise RenderError("Aucun des visages choisis n'a été retrouvé dans la vidéo.")
 
+    # Avec un point de reprise : écriture par morceaux, et on repart après les images déjà rendues.
+    # Un morceau est refermé toutes les ~2 min : un arrêt brutal (PC éteint, plantage) ne perd que ce qui suit.
+    start_frame = checkpoint.frames_done if checkpoint else 0
+    if checkpoint:
+        stats.swapped, stats.reused = checkpoint.swapped, checkpoint.reused
+        for entry in active:
+            entry[3] = checkpoint.counts.get(entry[0].label, 0)
+    roll_every = float(rcfg.get("checkpoint_every_s", 120))
+    mark = [time.perf_counter()]
+    paused = False
+
+    def new_writer() -> media.FrameWriter:
+        target = checkpoint.path.parent / f"chunk_{len(checkpoint.chunks):03d}.mp4" if checkpoint else out
+        return media.FrameWriter(target, size, info.fps_str, int(rcfg.crf), str(rcfg.preset))
+
+    def save_chunk(writer: media.FrameWriter, frames_done: int) -> None:
+        """Referme le morceau en cours et enregistre le point de reprise."""
+        writer.close()
+        if writer.dst.is_file():
+            checkpoint.chunks.append(writer.dst.name)
+        checkpoint.frames_done = frames_done
+        checkpoint.swapped, checkpoint.reused = stats.swapped, stats.reused
+        checkpoint.counts = {entry[0].label: entry[3] for entry in active}
+        now = time.perf_counter()
+        checkpoint.elapsed += now - mark[0]
+        mark[0] = now
+        checkpoint.save()
+
     cap = cv2.VideoCapture(str(clip))
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or round(info.duration * info.fps)
     every = int(rcfg.preview_every)
     duplicates = DuplicateDetector(float(rcfg.get("duplicate_block_diff", 4.0)))
     last_out: np.ndarray | None = None
+    writer = new_writer()
     try:
-        with media.FrameWriter(out, size, info.fps_str, int(rcfg.crf), str(rcfg.preset)) as writer:
-            i = 0
-            while True:
-                ok, frame = cap.read()
-                if not ok:
-                    break
-                if last_out is not None and duplicates.is_duplicate(frame):
-                    # Copie de l'image précédente : même résultat, sans refaire détection ni swap.
-                    writer.write(last_out)
-                    stats.reused += 1
-                    i += 1
-                    report("swap", i, max(total, i))
-                    continue
+        i = start_frame
+        for _ in range(start_frame):  # reprise : images déjà dans les morceaux précédents
+            if not cap.grab():
+                break
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if last_out is not None and duplicates.is_duplicate(frame):
+                # Copie de l'image précédente : même résultat, sans refaire détection ni swap.
+                writer.write(last_out)
+                stats.reused += 1
+                i += 1
+            else:
                 if last_out is None:
                     duplicates.is_duplicate(frame)  # mémorise la première image
                 faces = detect_boxes(frame)
@@ -229,10 +307,29 @@ def swap_segment(clip: Path, mappings: list[FaceMapping], level: str, out: Path,
                     tmp = preview.with_suffix(".tmp.jpg")
                     cv2.imwrite(str(tmp), small, [cv2.IMWRITE_JPEG_QUALITY, 82])
                     tmp.replace(preview)
-                report("swap", i, max(total, i))
-            stats.frames = i
+            if _tick(report, i, total):
+                paused = True
+                break
+            if checkpoint is not None and time.perf_counter() - mark[0] >= roll_every:
+                save_chunk(writer, i)
+                writer = new_writer()
+        stats.frames = i
+    except BaseException:
+        writer.abort()
+        raise
     finally:
         cap.release()
+
+    if checkpoint is not None:
+        save_chunk(writer, stats.frames)
+        if paused:
+            raise Paused()
+        if checkpoint.chunks:
+            media.concat_videos([checkpoint.path.parent / c for c in checkpoint.chunks], out)
+    else:
+        writer.close()
+        if paused:
+            raise Paused()
 
     if stats.frames == 0:
         raise RenderError("Aucune frame lue dans l'extrait.")
@@ -263,22 +360,25 @@ def render(source: Path, mappings: list[FaceMapping], opts: RenderOptions, work_
     report = progress or (lambda *_: None)
     stats = RenderStats()
     t0 = time.perf_counter()
+    work_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint = Checkpoint.load(work_dir)       # reprise après une pause, s'il y en a une
 
     report("cut", 0, 1)
-    segment = cut(source, opts, work_dir)
+    segment = cut(source, opts, work_dir, reuse=checkpoint.frames_done > 0)
     report("cut", 1, 1)
 
     swapped = work_dir / "swapped.mp4"
     local = relative_targets(mappings, opts.start, opts.end - opts.start)
     swap_segment(segment.path, local, opts.level, swapped, stabilize=opts.stabilize, progress=report,
-                 preview=preview, stats=stats)
-    elapsed = time.perf_counter() - t0
+                 preview=preview, stats=stats, checkpoint=checkpoint)   # peut lever Paused
+    elapsed = checkpoint.elapsed                 # temps de calcul cumulé, toutes sessions confondues
     stats.sec_per_frame = elapsed / stats.frames
     stats.sec_per_computed = elapsed / max(1, stats.frames - stats.reused)
 
     report("assemble", 0, 1)
     assemble(source, segment, swapped, opts, out, work_dir)
     report("assemble", 1, 1)
+    checkpoint.clear()
     stats.seconds = time.perf_counter() - t0
     return stats
 

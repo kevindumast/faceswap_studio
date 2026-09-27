@@ -100,7 +100,9 @@ export type Job = {
   video_title: string | null;
   face_set_id: string;
   params: JobParams;
-  status: "queued" | "running" | "cancelling" | "cancelled" | "done" | "error";
+  status: "queued" | "running" | "cancelling" | "cancelled" | "done" | "error" | "pausing" | "paused";
+  /** false pour ZeroGPU : le Space calcule tout l'extrait d'un coup. */
+  pausable: boolean;
   stage: "cut" | "swap" | "assemble" | null;
   done: number;
   total: number;
@@ -265,5 +267,7 @@ export const api = {
   createJob: (body: JobParams & { video_id: string; face_set_id: string; consent: boolean }) =>
     request<Job>("POST", "/api/jobs", body),
   cancelJob: (id: string) => request<Job>("POST", `/api/jobs/${id}/cancel`),
+  pauseJob: (id: string) => request<Job>("POST", `/api/jobs/${id}/pause`),
+  resumeJob: (id: string) => request<Job>("POST", `/api/jobs/${id}/resume`),
   deleteJob: (id: string) => request<{ ok: boolean }>("DELETE", `/api/jobs/${id}`),
 };

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, ArrowRight, Check, Clapperboard, Cpu, Download, Film, Loader2, RotateCcw, Scissors, Sparkles, Wand2, X, Zap } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Clapperboard, Cpu, Download, Film, Loader2, Pause, Play, RotateCcw, Scissors, Sparkles, Wand2, X, Zap } from "lucide-react";
 import { useState } from "react";
 import { ApiError, api, type Job, type JobParams, type Level, type Mapping, type Status, type Video } from "../lib/api";
 import { levelInfo } from "../lib/levels";
@@ -33,7 +33,7 @@ export function RenderStep(p: Props) {
     queryKey: ["job", p.jobId],
     queryFn: () => api.job(p.jobId!),
     enabled: !!p.jobId,
-    refetchInterval: (q) => (q.state.data && TERMINAL.includes(q.state.data.status) ? false : 1000),
+    refetchInterval: (q) => (q.state.data && TERMINAL.includes(q.state.data.status) ? false : q.state.data?.status === "paused" ? 3000 : 1000),
     // Rendu supprimé (404) : on arrête tout de suite. API qui redémarre : on réessaie sans rien afficher.
     retry: (count, err) => !(err instanceof ApiError && err.status === 404) && count < 10,
     retryDelay: 1000,
@@ -72,6 +72,7 @@ export function RenderStep(p: Props) {
       </div>
     );
   }
+  if (j.status === "paused") return <PausedView job={j} video={p.video} />;
   return <Running job={j} video={p.video} worker={p.status?.worker ?? true} />;
 }
 
@@ -341,9 +342,72 @@ function overall(j: Job): number {
   return 0;
 }
 
+/** Rendu en pause : ce qui est déjà calculé est gardé, la reprise repart à la même image. */
+function PausedView({ job, video }: { job: Job; video: Video }) {
+  const qc = useQueryClient();
+  const resume = useMutation({ mutationFn: () => api.resumeJob(job.id), onSuccess: (j) => qc.setQueryData(["job", j.id], j) });
+  const cancel = useMutation({ mutationFn: () => api.cancelJob(job.id), onSuccess: (j) => qc.setQueryData(["job", j.id], j) });
+  const info = video.info!;
+  const frac = job.total ? job.done / job.total : 0;
+  return (
+    <div>
+      <SectionTitle
+        eyebrow="Étape 4 · Rendu"
+        title="En pause"
+        subtitle="Tu peux fermer l'appli ou éteindre le PC : le rendu reprendra exactement à cette image."
+        right={
+          <div className="flex gap-2">
+            <Button variant="primary" size="md" icon={<Play className="size-4 fill-current" />} onClick={() => resume.mutate()} loading={resume.isPending}>
+              Reprendre
+            </Button>
+            <Button variant="danger" size="md" icon={<X className="size-4" />} onClick={() => cancel.mutate()} loading={cancel.isPending}>
+              Annuler
+            </Button>
+          </div>
+        }
+      />
+      {job.error && (
+        <Notice tone="info" className="mb-5">
+          {job.error}
+        </Notice>
+      )}
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+        <div className="relative overflow-hidden rounded-[var(--radius-card)] bg-black ring-1 ring-line" style={{ aspectRatio: `${info.width} / ${info.height}` }}>
+          {job.done > 0 && <img src={`${job.preview_url}?v=${job.done}`} alt="Dernière image calculée" className="absolute inset-0 size-full object-contain opacity-70" />}
+          <span className="absolute top-3 left-3 flex items-center gap-1.5 rounded-full bg-black/60 px-2.5 py-1 text-[11px] backdrop-blur-md">
+            <Pause className="size-3 fill-current" /> Dernière image calculée
+          </span>
+        </div>
+        <Card className="flex flex-col p-5 sm:p-6">
+          <div className="flex items-baseline justify-between">
+            <span className="font-mono text-5xl font-medium tracking-tight tabular">
+              {Math.round(frac * 100)}
+              <span className="text-2xl text-muted">%</span>
+            </span>
+            <span className="font-mono text-sm text-muted tabular">
+              {job.done}/{job.total} images
+            </span>
+          </div>
+          <ProgressBar value={frac} tone="warn" className="mt-4 h-2" />
+          <p className="mt-6 text-[13px] text-muted">
+            Déjà calculé : {job.done} image{job.done > 1 ? "s" : ""}. Pendant la pause, le worker est libre pour d'autres rendus ;
+            à la reprise, ce rendu repasse en tête de file.
+          </p>
+          {(resume.error || cancel.error) && (
+            <Notice tone="danger" className="mt-4">
+              {(resume.error ?? cancel.error)!.message}
+            </Notice>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 function Running({ job, video, worker }: { job: Job; video: Video; worker: boolean }) {
   const qc = useQueryClient();
   const cancel = useMutation({ mutationFn: () => api.cancelJob(job.id), onSuccess: (j) => qc.setQueryData(["job", j.id], j) });
+  const pause = useMutation({ mutationFn: () => api.pauseJob(job.id), onSuccess: (j) => qc.setQueryData(["job", j.id], j) });
   const frac = overall(job);
   const stageIdx = STAGES.findIndex((s) => s.key === job.stage);
   const queued = job.status === "queued";
@@ -354,7 +418,7 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
     <div>
       <SectionTitle
         eyebrow="Étape 4 · Rendu"
-        title={queued ? "En file d'attente…" : job.status === "cancelling" ? "Annulation…" : "Rendu en cours"}
+        title={queued ? "En file d'attente…" : job.status === "cancelling" ? "Annulation…" : job.status === "pausing" ? "Mise en pause…" : "Rendu en cours"}
         subtitle={
           queued && !worker
             ? "Le worker n'est pas lancé : démarre scripts\\dev.ps1 pour que le rendu commence."
@@ -363,9 +427,24 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
               : "Tu peux changer d'onglet, le calcul continue."
         }
         right={
-          <Button variant="danger" size="md" icon={<X className="size-4" />} onClick={() => cancel.mutate()} loading={cancel.isPending} disabled={job.status === "cancelling"}>
-            Annuler
-          </Button>
+          <div className="flex gap-2">
+            {job.pausable && (
+              <Button
+                variant="secondary"
+                size="md"
+                icon={<Pause className="size-4" />}
+                onClick={() => pause.mutate()}
+                loading={pause.isPending || job.status === "pausing"}
+                disabled={job.status === "cancelling"}
+                title="Arrêter ici et reprendre plus tard, à la même image"
+              >
+                Pause
+              </Button>
+            )}
+            <Button variant="danger" size="md" icon={<X className="size-4" />} onClick={() => cancel.mutate()} loading={cancel.isPending} disabled={job.status === "cancelling"}>
+              Annuler
+            </Button>
+          </div>
         }
       />
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">

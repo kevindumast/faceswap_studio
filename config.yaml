@@ -80,6 +80,7 @@ render:
   preview_every: 8             # frames entre deux aperçus live
   fps_cap: 30                  # option « Limiter à 30 i/s » : cadence max (atteinte en gardant une image sur N)
   duplicate_block_diff: 4.0    # écart max par bloc sous lequel une image est une copie de la précédente (0 = désactivé)
+  checkpoint_every_s: 120      # point de reprise enregistré toutes les N s de calcul (arrêt brutal = au plus N s perdues)
   default_sec_per_frame: 2.2   # estimation CPU avant le premier job mesuré (i7 4 cœurs ≈ 2,2 s)
 
 proxy:

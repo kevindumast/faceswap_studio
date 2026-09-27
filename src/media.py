@@ -197,13 +197,20 @@ class FrameWriter:
             stdin=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=_NO_WINDOW,
         )
         self.size = size
+        self.dst = dst
+        self.count = 0
 
     def write(self, frame: np.ndarray) -> None:
         if (frame.shape[1], frame.shape[0]) != self.size:
             frame = cv2.resize(frame, self.size)
         self.proc.stdin.write(np.ascontiguousarray(frame).tobytes())
+        self.count += 1
 
     def close(self) -> None:
+        if self.count == 0:  # rien d'écrit (pause immédiate) : pas de fichier vide ou invalide
+            self.abort()
+            self.dst.unlink(missing_ok=True)
+            return
         self.proc.stdin.close()
         err = self.proc.stderr.read().decode("utf-8", "replace")
         if self.proc.wait() != 0:
@@ -305,3 +312,16 @@ def assemble_full(source: Path, swapped: Path, dst: Path, info: VideoInfo, size:
 
 def make_poster(src: Path, dst: Path, t: float = 0.0, max_height: int = 360) -> None:
     ffmpeg("-ss", f"{max(t, 0):.3f}", "-i", str(src), "-vf", f"scale=-2:'min({max_height},ih)'", "-frames:v", "1", "-q:v", "4", str(dst))
+
+
+def concat_videos(parts: list[Path], dst: Path) -> None:
+    """Recolle des morceaux encodés avec les mêmes réglages, sans réencodage (reprise après une pause)."""
+    if len(parts) == 1:
+        shutil.copy2(parts[0], dst)
+        return
+    listing = dst.with_suffix(".txt")
+    listing.write_text("".join(f"file '{p.resolve().as_posix()}'\n" for p in parts), encoding="utf-8")
+    try:
+        ffmpeg("-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy", str(dst))
+    finally:
+        listing.unlink(missing_ok=True)

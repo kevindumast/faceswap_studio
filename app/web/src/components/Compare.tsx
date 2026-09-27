@@ -1,4 +1,4 @@
-import { Pause, Play, Volume2, VolumeX } from "lucide-react";
+import { Maximize2, Minimize2, Pause, Play, Volume2, VolumeX } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { clamp, timecode } from "../lib/time";
 import { Button } from "./ui";
@@ -6,6 +6,18 @@ import { Button } from "./ui";
 /** Lecteur avant / après : deux vidéos synchronisées, un rideau déplaçable. */
 export function Compare({ before, after, aspect, fps }: { before: string; after: string; aspect: string; fps: number }) {
   const box = useRef<HTMLDivElement>(null);
+  const wrapper = useRef<HTMLDivElement>(null);
+  const [fullscreen, setFullscreen] = useState(false);
+
+  useEffect(() => {
+    const onChange = () => setFullscreen(document.fullscreenElement === wrapper.current);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void wrapper.current?.requestFullscreen();
+  };
   const a = useRef<HTMLVideoElement>(null);
   const b = useRef<HTMLVideoElement>(null);
   const [pos, setPos] = useState(50);
@@ -57,11 +69,12 @@ export function Compare({ before, after, aspect, fps }: { before: string; after:
   };
 
   return (
-    <div className="flex flex-col gap-3">
+    <div ref={wrapper} className={fullscreen ? "flex h-screen w-screen flex-col gap-3 bg-black p-4" : "flex flex-col gap-3"}>
       <div
         ref={box}
         className="relative touch-none overflow-hidden rounded-[var(--radius-card)] bg-black ring-1 ring-line select-none"
-        style={{ aspectRatio: aspect }}
+        style={fullscreen ? { flex: 1, minHeight: 0 } : { aspectRatio: aspect }}
+        onDoubleClick={toggleFullscreen}
         onPointerDown={(e) => {
           dragging.current = true;
           (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -113,6 +126,16 @@ export function Compare({ before, after, aspect, fps }: { before: string; after:
         <span className="font-mono text-[13px] text-muted tabular">
           {timecode(t, fps)} / {timecode(dur, fps)}
         </span>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={toggleFullscreen}
+          aria-label={fullscreen ? "Quitter le plein écran" : "Plein écran"}
+          title={fullscreen ? "Quitter le plein écran (Échap)" : "Plein écran (ou double-clic sur la vidéo)"}
+          className="w-8 px-0"
+        >
+          {fullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+        </Button>
         <Button variant="ghost" size="sm" onClick={() => setMuted((m) => !m)} aria-label={muted ? "Activer le son" : "Couper le son"} className="w-8 px-0">
           {muted ? <VolumeX className="size-4" /> : <Volume2 className="size-4" />}
         </Button>

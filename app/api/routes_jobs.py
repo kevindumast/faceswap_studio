@@ -115,6 +115,7 @@ def public(job: dict) -> dict:
         "eta": eta,
         "sec_per_frame": job["sec_per_frame"],
         "queue_ahead": db.jobs_ahead(job["created_at"]) if job["status"] == "queued" else 0,
+        "pausable": not params.get("use_gpu"),     # ZeroGPU calcule l'extrait d'un coup : rien à reprendre
         "error": job["error"],
         "warnings": job["warnings"] or [],
         "preview_url": f"{base}/preview.jpg",
@@ -163,12 +164,37 @@ def get_job(job_id: str) -> dict:
     return public(get_or_404("jobs", job_id, "Rendu"))
 
 
+@router.post("/{job_id}/pause")
+def pause_job(job_id: str) -> dict:
+    """Met un rendu local en pause : le morceau en cours est refermé, la reprise repartira de la même image."""
+    job = get_or_404("jobs", job_id, "Rendu")
+    if job["params"].get("use_gpu"):
+        raise HTTPException(409, "Pause impossible sur ZeroGPU : le Space calcule tout l'extrait d'un coup.")
+    if job["status"] == "running":
+        db.update("jobs", job_id, status="pausing")      # le worker s'arrête proprement à l'image suivante
+    elif job["status"] == "queued":
+        db.update("jobs", job_id, status="paused")
+    elif job["status"] not in ("pausing", "paused"):
+        raise HTTPException(409, "Ce rendu ne peut pas être mis en pause.")
+    return public(db.get("jobs", job_id))
+
+
+@router.post("/{job_id}/resume")
+def resume_job(job_id: str) -> dict:
+    """Remet un rendu en pause dans la file : il reprendra à l'image où il s'était arrêté."""
+    job = get_or_404("jobs", job_id, "Rendu")
+    if job["status"] != "paused":
+        raise HTTPException(409, "Ce rendu n'est pas en pause.")
+    db.update("jobs", job_id, status="queued", error=None)
+    return public(db.get("jobs", job_id))
+
+
 @router.post("/{job_id}/cancel")
 def cancel_job(job_id: str) -> dict:
     job = get_or_404("jobs", job_id, "Rendu")
-    if job["status"] == "queued":
+    if job["status"] in ("queued", "paused"):
         db.update("jobs", job_id, status="cancelled", finished_at=time.time())
-    elif job["status"] == "running":
+    elif job["status"] in ("running", "pausing"):
         db.update("jobs", job_id, status="cancelling")  # le worker s'arrête à la frame suivante
     return public(db.get("jobs", job_id))
 
@@ -176,8 +202,8 @@ def cancel_job(job_id: str) -> dict:
 @router.delete("/{job_id}")
 def delete_job(job_id: str) -> dict:
     job = get_or_404("jobs", job_id, "Rendu")
-    if job["status"] in ("running", "cancelling"):
-        raise HTTPException(409, "Annulez le rendu avant de le supprimer.")
+    if job["status"] in ("running", "cancelling", "pausing"):
+        raise HTTPException(409, "Annulez ou mettez le rendu en pause avant de le supprimer.")
     db.delete("jobs", job_id)
     shutil.rmtree(db.folder("jobs", job_id), ignore_errors=True)
     return {"ok": True}

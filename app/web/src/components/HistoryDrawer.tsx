@@ -10,6 +10,8 @@ const LABEL: Record<Job["status"], string> = {
   queued: "En attente",
   running: "En cours",
   cancelling: "Annulation",
+  pausing: "Pause…",
+  paused: "En pause",
   cancelled: "Annulé",
   done: "Terminé",
   error: "Erreur",
@@ -89,7 +91,7 @@ export function HistoryDrawer({ open, onClose, onOpenJob }: { open: boolean; onC
                           <Download className="size-3.5" />
                         </a>
                       )}
-                      {!["running", "cancelling"].includes(j.status) && (
+                      {!["running", "cancelling", "pausing"].includes(j.status) && (
                         <button onClick={() => del.mutate(j.id)} aria-label="Supprimer" className="flex size-7 items-center justify-center rounded-lg text-muted hover:bg-danger-soft hover:text-danger">
                           <Trash2 className="size-3.5" />
                         </button>
