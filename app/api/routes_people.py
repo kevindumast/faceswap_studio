@@ -20,6 +20,10 @@ class RenameIn(BaseModel):
     name: str
 
 
+class ReferenceIn(BaseModel):
+    photo_id: str | None = None   # None : choix automatique (la photo la plus en pied)
+
+
 class MoveIn(BaseModel):
     person: str  # id d'une autre personne, ou "new"
 
@@ -146,6 +150,16 @@ def delete_photo(pid: str, photo_id: str) -> dict:
     _load(pid)
     still = library.delete_photo(pid, photo_id)
     return {"ok": True, "person_exists": still}
+
+
+@router.put("/{pid}/reference")
+def set_reference(pid: str, body: ReferenceIn) -> dict:
+    """Choisit la photo utilisée au niveau 4 pour cette personne (gardée pour toutes les vidéos)."""
+    _load(pid)
+    try:
+        return library.set_reference(pid, body.photo_id)
+    except library.PersonNotFound as exc:
+        raise not_found("Photo") from exc
 
 
 @router.get("/{pid}/framing")

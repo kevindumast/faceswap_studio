@@ -32,7 +32,7 @@ def framing_of(ratio: float | None) -> str:
 @dataclass
 class Reference:
     path: Path
-    face_ratio: float     # hauteur du visage / hauteur de la photo (petit = photo en pied)
+    face_ratio: float | None    # hauteur du visage / hauteur de la photo (petit = photo en pied ; None : introuvable)
 
     @property
     def framing(self) -> str:

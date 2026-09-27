@@ -1,10 +1,12 @@
 """Vidéos : import de fichier, récupération par URL, préparation (proxy + filmstrip), visages d'une frame."""
 from __future__ import annotations
 
+import json
 import shutil
 import threading
 import time
 from collections import OrderedDict
+from contextlib import suppress
 
 from pathlib import Path
 
@@ -16,8 +18,8 @@ from pydantic import BaseModel
 from app import db
 from src import fetch, media
 from src.config import load_config
-from src.faces import ModelsMissing, detect, face_crop
-from src.scan import scan_passage
+from src.faces import ModelsMissing, detect, face_crop, iou
+from src.scan import Person, face_in_region, scan_passage
 
 from .common import background, get_or_404, jpeg_data_url, not_found, save_upload
 
@@ -26,6 +28,14 @@ router = APIRouter(prefix="/api/videos", tags=["videos"])
 
 class UrlIn(BaseModel):
     url: str
+
+
+class RegionIn(BaseModel):
+    """Zone tracée à la main sur une image analysée du passage [start, end]."""
+    start: float
+    end: float
+    t: float
+    box: tuple[float, float, float, float]  # x1, y1, x2, y2 en fractions 0-1 de l'image
 
 
 def public(video: dict) -> dict:
@@ -215,9 +225,43 @@ _scan_cache: OrderedDict[tuple, dict] = OrderedDict()
 _scan_lock = threading.Lock()
 
 
+def _scan_source(video: dict) -> Path:
+    return Path(video["source"]) if video.get("source") and Path(video["source"]).is_file() \
+        else db.folder("videos", video["id"]) / "proxy.mp4"
+
+
+def _preview(img) -> str:
+    scale = min(1.0, 720 / img.shape[0])
+    return jpeg_data_url(cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA), 82)
+
+
+def _scan_face(p: Person) -> dict:
+    return {"t": p.t, "box": p.box, "score": p.score, "seen": len(p.times), "height_px": p.height_px,
+            "maybe_same": p.maybe_same, "seen_at": [{"t": t, "box": box} for t, box in p.seen_at], "crop": jpeg_data_url(p.crop)}
+
+
+# Visages ajoutés à la main (étape Visages), gardés avec la vidéo : ils survivent à un redémarrage de l'API.
+def _manual_path(video_id: str) -> Path:
+    return db.folder("videos", video_id) / "manual_faces.json"
+
+
+def _load_manual(video_id: str) -> list[dict]:
+    path = _manual_path(video_id)
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
+
+
+def _save_manual(video_id: str, faces: list[dict]) -> None:
+    path = _manual_path(video_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(faces), encoding="utf-8")
+
+
 @router.get("/{video_id}/scan")
 def scan(video_id: str, start: float, end: float) -> dict:
-    """Personnes présentes dans le passage [start, end] : une entrée par personne, avec sa meilleure apparition."""
+    """Personnes présentes dans le passage [start, end] : une entrée par personne, avec sa meilleure apparition.
+
+    Les visages ajoutés à la main sur ce passage viennent en fin de liste.
+    """
     video = get_or_404("videos", video_id, "Vidéo")
     if video["status"] != "ready":
         raise HTTPException(409, "Vidéo pas encore prête.")
@@ -227,35 +271,65 @@ def scan(video_id: str, start: float, end: float) -> dict:
         raise HTTPException(422, "Passage trop court.")
     key = (video_id, round(start, 2), round(end, 2))
     with _scan_lock:
-        if key in _scan_cache:
+        result = _scan_cache.get(key)
+        if result is not None:
             _scan_cache.move_to_end(key)
-            return _scan_cache[key]
-    source = Path(video["source"]) if video.get("source") and Path(video["source"]).is_file() \
-        else db.folder("videos", video_id) / "proxy.mp4"
+    if result is None:
+        try:
+            people, frames = scan_passage(_scan_source(video), start, end)
+        except ModelsMissing as exc:
+            raise HTTPException(503, str(exc)) from exc
+        result = {
+            "start": start,
+            "end": end,
+            "samples": int(load_config().get("scan", {}).get("samples", 12)),
+            "faces": [_scan_face(p) for p in people],
+            "frames": {f"{t:.3f}": _preview(img) for t, img in frames.items()},
+            "width": video["info"]["width"],
+            "height": video["info"]["height"],
+        }
+        with _scan_lock:
+            _scan_cache[key] = result
+            while len(_scan_cache) > 12:
+                _scan_cache.popitem(last=False)
+    manual = [f for f in _load_manual(video_id) if start <= f["t"] <= end]
+    if not manual:
+        return result
+    frames = dict(result["frames"])
+    for f in manual:   # passage modifié depuis l'ajout : l'image où le visage a été indiqué n'est plus analysée
+        k = f"{f['t']:.3f}"
+        if k not in frames:
+            with suppress(media.MediaError):
+                frames[k] = _preview(media.extract_frame(_scan_source(video), f["t"], int(load_config().render.max_height)))
+    return {**result, "faces": result["faces"] + manual, "frames": frames}
+
+
+@router.post("/{video_id}/scan/faces")
+def add_scan_face(video_id: str, body: RegionIn) -> dict:
+    """Ajoute le visage d'une zone tracée à la main. S'il est déjà dans la liste, renvoie seulement sa place."""
+    video = get_or_404("videos", video_id, "Vidéo")
+    faces = scan(video_id, body.start, body.end)["faces"]
     try:
-        people, frames = scan_passage(source, start, end)
+        person = face_in_region(_scan_source(video), body.t, body.box)
     except ModelsMissing as exc:
         raise HTTPException(503, str(exc)) from exc
-
-    def preview(img):
-        scale = min(1.0, 720 / img.shape[0])
-        return jpeg_data_url(cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA), 82)
-
-    result = {
-        "start": start,
-        "end": end,
-        "samples": int(load_config().get("scan", {}).get("samples", 12)),
-        "faces": [
-            {"t": p.t, "box": p.box, "score": p.score, "seen": len(p.times), "height_px": p.height_px, "maybe_same": p.maybe_same,
-             "crop": jpeg_data_url(p.crop)}
-            for p in people
-        ],
-        "frames": {f"{t:.3f}": preview(img) for t, img in frames.items()},
-        "width": video["info"]["width"],
-        "height": video["info"]["height"],
-    }
+    except media.MediaError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if person is None:
+        raise HTTPException(422, "Aucun visage trouvé dans ce cadre, même en zoomant. De dos ou de profil très marqué, "
+                                 "il ne pourra pas être remplacé : le rendu doit retrouver le visage sur chaque image.")
+    for i, f in enumerate(faces):
+        if any(abs(a["t"] - body.t) < 1e-3 and iou(a["box"], person.box) > 0.4 for a in f["seen_at"]):
+            return {"index": i, "face": None}
+    face = {**_scan_face(person), "id": db.new_id(), "manual": True}
     with _scan_lock:
-        _scan_cache[key] = result
-        while len(_scan_cache) > 12:
-            _scan_cache.popitem(last=False)
-    return result
+        _save_manual(video_id, _load_manual(video_id) + [face])
+    return {"index": len(faces), "face": face}
+
+
+@router.delete("/{video_id}/scan/faces/{face_id}")
+def delete_scan_face(video_id: str, face_id: str) -> dict:
+    get_or_404("videos", video_id, "Vidéo")
+    with _scan_lock:
+        _save_manual(video_id, [f for f in _load_manual(video_id) if f["id"] != face_id])
+    return {"ok": True}

@@ -13,7 +13,7 @@ from app import db
 from app.api.routes_faces import load_person_assets
 from app.worker.zerogpu_client import RemoteCancelled, ZeroGPUClient, wait_until_ready
 from src import media
-from src.character import choose_reference, recompose
+from src.character import Reference, choose_reference, face_ratio, recompose
 from src.config import accelerator, load_config
 from src.levels import CHARACTER, FACE
 from src.pipeline import Cancelled, FaceMapping, Paused, RenderOptions, RenderStats, assemble, cut, relative_targets, render
@@ -119,7 +119,9 @@ def run_character(job: dict, source: Path, opts: RenderOptions, mappings: list[F
     segment = cut(source, opts, out)
     current = out / "cut_silent.mp4"          # le son ne part pas : il est remis à l'assemblage
     media.ffmpeg("-i", str(segment.path), "-an", "-c:v", "copy", str(current))
-    references = [choose_reference(m.person.photos) for m in mappings]
+    # Photo choisie à la main dans la bibliothèque, sinon la plus en pied.
+    references = [Reference(m.person.reference, face_ratio(m.person.reference)) if m.person.reference
+                  else choose_reference(m.person.photos) for m in mappings]
     for i, ref in enumerate(references):
         warning = _reference_warning(f"Personne {i + 1}" if len(mappings) > 1 else "Cette personne", ref.framing)
         if warning:

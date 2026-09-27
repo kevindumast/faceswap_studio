@@ -10,6 +10,7 @@ import { Button, Card, Notice, ProgressBar, SectionTitle, SegmentedControl, Swit
 import { Compare } from "../components/Compare";
 import { openEngineSettings } from "../components/EngineSettings";
 import { chrono } from "../components/SpaceStatus";
+import { ReferenceThumb } from "../components/PersonReference";
 import { parseStage, type StageKey } from "../lib/stages";
 import type { Selection } from "../components/trimmer/Trimmer";
 import { PersonBadge } from "./FacesStep";
@@ -193,9 +194,11 @@ function Setup(p: Props) {
                         <PersonBadge style={styleOf(persons, m.person)} size="md" />
                       )}
                       <span>{person?.name ?? `Personne ${m.person}`}</span>
-                      <span className="text-[12px] text-muted">
-                        {person ? `${person.count} photo${person.count > 1 ? "s" : ""}` : ""}
-                      </span>
+                      {isCharacter && person ? (
+                        <ReferenceThumb person={person} />
+                      ) : (
+                        <span className="text-[12px] text-muted">{person ? `${person.count} photo${person.count > 1 ? "s" : ""}` : ""}</span>
+                      )}
                     </li>
                   );
                 })}

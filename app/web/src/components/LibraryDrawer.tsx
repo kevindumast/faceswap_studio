@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { AlertTriangle, BookUser, Check, ChevronDown, ImagePlus, Loader2, Pencil, PersonStanding, Search, ShieldCheck, Trash2, UserPlus, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, type ImportResult, type PendingPhoto, type Person } from "../lib/api";
+import { useChooseReference, useFraming } from "./PersonReference";
 import { FRAMING_TEXT, PhotoViewer } from "./PhotoViewer";
 import { Button, Notice, cx } from "./ui";
 
@@ -229,13 +230,9 @@ function PersonRow(p: {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(p.person.name);
   const [viewing, setViewing] = useState<number | null>(null);
-  // Cadrage des photos (en pied ou non), calculé une fois par photo côté serveur.
-  const framing = useQuery({
-    queryKey: ["framing", p.person.id, p.person.photos.map((ph) => ph.id).join(",")],
-    queryFn: () => api.framing(p.person.id),
-    enabled: p.expanded || viewing != null,
-    staleTime: Infinity,
-  });
+  // Cadrage des photos (en pied ou non), calculé une fois par photo côté serveur ; photo choisie pour le niveau 4.
+  const framing = useFraming(p.person, p.expanded || viewing != null);
+  const choose = useChooseReference(p.person.id);
   const updated = p.person.updated_at ? new Date(p.person.updated_at * 1000).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }) : null;
   const save = () => {
     setEditing(false);
@@ -322,8 +319,8 @@ function PersonRow(p: {
               })}
             </div>
             <p className="px-2.5 pb-2.5 text-[11px] text-faint">
-              Vignettes recadrées sur le visage : clique pour voir la photo entière. <PersonStanding className="inline size-3" /> = en pied (vert) ou à
-              mi-corps (orange) ; la photo entourée est celle que le niveau 4 utilisera.
+              Vignettes recadrées sur le visage : clique pour voir la photo entière et choisir celle du niveau 4 (entourée).{" "}
+              <PersonStanding className="inline size-3" /> = en pied (vert) ou à mi-corps (orange).
             </p>
           </motion.div>
         )}
@@ -335,6 +332,8 @@ function PersonRow(p: {
         framingError={framing.error?.message}
         onIndex={setViewing}
         onClose={() => setViewing(null)}
+        onChooseReference={(photoId) => choose.mutate(photoId)}
+        choosing={choose.isPending}
       />
     </li>
   );

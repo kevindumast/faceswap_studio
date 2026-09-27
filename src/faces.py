@@ -54,6 +54,31 @@ def detect_boxes(frame: np.ndarray, size: int | None = None, thresh: float | Non
     return sorted(faces, key=lambda f: area(f.bbox), reverse=True)
 
 
+def detect_in_region(frame: np.ndarray, box, size: int, thresh: float):
+    """Visage d'une zone indiquée à la main (box en fractions 0-1), détecté en zoomant dessus, embedding calculé.
+
+    Sur l'image entière réduite pour le détecteur, un petit visage perd la moitié de ses pixels ; recadré sur la zone
+    (avec de la marge), il est analysé à pleine résolution. Boîte et points clés sont rendus dans les coordonnées de
+    l'image entière. None si aucun visage n'a son centre dans la zone.
+    """
+    h, w = frame.shape[:2]
+    x1, x2 = sorted((float(box[0]) * w, float(box[2]) * w))
+    y1, y2 = sorted((float(box[1]) * h, float(box[3]) * h))
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+    half = max(x2 - x1, y2 - y1, 24.0) * 1.25   # marge : le visage occupe ~40 % du recadrage, là où le détecteur est à l'aise
+    left, top = int(max(0, cx - half)), int(max(0, cy - half))
+    right, bottom = int(min(w, cx + half)), int(min(h, cy + half))
+    faces = [f for f in detect_boxes(frame[top:bottom, left:right], size=size, thresh=thresh)
+             if x1 <= left + (f.bbox[0] + f.bbox[2]) / 2 <= x2 and y1 <= top + (f.bbox[1] + f.bbox[3]) / 2 <= y2]
+    if not faces:
+        return None
+    face = max(faces, key=lambda f: f.det_score)
+    face.bbox = face.bbox + np.array([left, top, left, top], dtype=face.bbox.dtype)
+    face.kps = face.kps + np.array([left, top], dtype=face.kps.dtype)
+    embed(frame, face)
+    return face
+
+
 def embed(frame: np.ndarray, face) -> None:
     """Calcule l'embedding ArcFace d'un visage détecté (remplit face.embedding / normed_embedding)."""
     with _lock:

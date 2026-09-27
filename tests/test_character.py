@@ -301,18 +301,23 @@ def test_worker_level4_two_people_in_two_passes(sample_video, tmp_path, monkeypa
     monkeypatch.setattr(worker.ZeroGPUClient, "from_settings", classmethod(lambda cls, kind="faces": FakeSpace()))
     monkeypatch.setattr(worker, "wait_until_ready", lambda kind, on_wait, should_cancel=None, poll=10.0: None)
     monkeypatch.setattr(worker, "choose_reference", lambda photos: Reference(photos[0], 0.1))
+    monkeypatch.setattr(worker, "face_ratio", lambda path: 0.2)          # photo choisie à la main : à mi-corps
     mappings = []
     for i, name in enumerate(("moi.jpg", "aurel.jpg")):
         photo = tmp_path / name
         photo.write_bytes(b"jpg")
         person = PersonAssets(source=SourceFace(np.ones(512, np.float32) / np.sqrt(512)), photos=[photo])
         mappings.append(FaceMapping(person, target={"t": 3.0, "box": [0.1 + 0.5 * i, 0.1, 0.3 + 0.5 * i, 0.4]}, label=name))
+    chosen = tmp_path / "choisie.jpg"
+    chosen.write_bytes(b"jpg")
+    mappings[0].person.reference = chosen                               # choisie dans la bibliothèque
     opts = RenderOptions(start=1.0, end=7.0, output="segment", stabilize=True, ai_label=False, level="character")
     progress = []
     stats = worker.run_character({"id": "t2", "params": {"resolution": "360p"}}, sample_video, opts, mappings,
                                  tmp_path / "job", lambda *a: progress.append(a))
 
-    assert [c["reference"] for c in calls] == ["moi.jpg", "aurel.jpg"]
+    assert [c["reference"] for c in calls] == ["choisie.jpg", "aurel.jpg"]
+    assert any(w.startswith("Personne 1 : photo à mi-corps") for w in stats.warnings)
     assert not calls[0]["right_red"] and calls[1]["right_red"]      # le 2e passage voit la 1re personne remplacée
     assert all(c["payload"]["mask_grid"] == [4, 8] for c in calls)  # plusieurs personnes : masque qui suit la silhouette
     assert calls[1]["payload"]["box"][0] == pytest.approx(0.6)
@@ -406,3 +411,20 @@ def test_state_api(client, spaces_configured, monkeypatch):
 
     db.set_meta("zerogpu_character_space", "")
     assert client.get("/api/settings/zerogpu/state?kind=character").json()["phase"] == "unconfigured"
+
+
+def test_reference_photo_chosen_by_hand(client, make_session):
+    from app import library
+
+    _, ids = make_session({"Kevin": [np.ones(512), np.ones(512)]})
+    pid = ids["Kevin"]
+    photos = [ph["id"] for ph in library.load(pid)["photos"]]
+    r = client.put(f"/api/people/{pid}/reference", json={"photo_id": photos[1]}).json()
+    assert r["reference"] == photos[1] and r["manual"] is True
+    assert library.assets(pid, "character").reference.name.startswith(photos[1])
+    assert client.put(f"/api/people/{pid}/reference", json={"photo_id": "inconnue"}).status_code == 404
+    library.delete_photo(pid, photos[1])                     # photo supprimée : retour au choix automatique
+    assert client.get(f"/api/people/{pid}/framing").json()["manual"] is False
+    assert library.assets(pid, "character").reference is None
+    client.put(f"/api/people/{pid}/reference", json={"photo_id": photos[0]})
+    assert client.put(f"/api/people/{pid}/reference", json={"photo_id": None}).json()["manual"] is False

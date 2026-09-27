@@ -14,10 +14,10 @@ dml_placement: split
 det_size: 640          # taille d'entrée du détecteur pendant le rendu (320 = plus rapide, moins précis)
 det_thresh: 0.4        # confiance minimale d'un visage pendant le rendu (l'identité filtre les faux positifs)
 
-# Recherche des personnes d'un passage (étape Visages) : plusieurs images, détection plus fine et plus tolérante.
+# Recherche des personnes d'un passage (étape Visages) : plusieurs images, détection plus tolérante.
 scan:
   samples: 12          # images analysées, réparties sur tout le passage
-  det_size: 960        # plus fin que le rendu : trouve les petits visages (plans larges, arrière-plan)
+  det_size: 640        # comme le rendu : à 960, les gros plans (visage qui remplit l'image) sont ratés ou mal notés
   det_thresh: 0.3      # accepte les visages flous, de profil ou dans l'ombre
   min_face_px: 24      # en dessous, trop petit pour un remplacement propre
   same_person: 0.4     # similarité ArcFace pour regrouper deux visages comme la même personne

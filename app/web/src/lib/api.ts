@@ -52,7 +52,13 @@ export type UrlInfo = {
 export type Photo = { id: string; name: string; crop_url: string; photo_url: string; full_url: string };
 /** Cadrage d'une photo pour le niveau 4 : de la tête aux pieds, mi-corps, portrait, ou visage introuvable. */
 export type Framing = "full" | "half" | "portrait" | "none";
-export type PersonFraming = { reference: string | null; photos: Record<string, { face_ratio: number | null; framing: Framing }> };
+/** reference : photo retenue pour le niveau 4 (choisie à la main si manual, sinon auto_reference = la plus en pied). */
+export type PersonFraming = {
+  reference: string | null;
+  auto_reference: string | null;
+  manual: boolean;
+  photos: Record<string, { face_ratio: number | null; framing: Framing }>;
+};
 /** Personne de la bibliothèque : permanente, réutilisable dans toutes les vidéos. */
 export type Person = { id: string; name: string; count: number; cover_url: string | null; photos: Photo[]; created_at?: number; updated_at?: number };
 export type RejectedPhoto = { id: string; name: string; photo_url: string };
@@ -66,8 +72,22 @@ export type FaceSet = { id: string; persons: Person[]; rejected: RejectedPhoto[]
 export type Box = [number, number, number, number];
 export type DetectedFace = { box: Box; score: number; crop: string };
 export type FramesFaces = { t: number; width: number; height: number; frame: string; faces: DetectedFace[] };
-/** Une personne vue dans le passage (plusieurs images analysées), représentée par sa meilleure apparition. */
-export type ScanFace = { t: number; box: Box; score: number; seen: number; height_px: number; maybe_same: number | null; crop: string };
+/**
+ * Une personne vue dans le passage (plusieurs images analysées), représentée par sa meilleure apparition.
+ * seen_at : toutes ses apparitions ; manual / id : visage ajouté à la main (supprimable).
+ */
+export type ScanFace = {
+  t: number;
+  box: Box;
+  score: number;
+  seen: number;
+  height_px: number;
+  maybe_same: number | null;
+  seen_at?: Target[];
+  manual?: boolean;
+  id?: string;
+  crop: string;
+};
 export type PassageScan = { start: number; end: number; samples: number; faces: ScanFace[]; frames: Record<string, string>; width: number; height: number };
 
 export type Target = { t: number; box: Box };
@@ -267,6 +287,10 @@ export const api = {
 
   scan: (id: string, start: number, end: number) =>
     request<PassageScan>("GET", `/api/videos/${id}/scan?start=${start.toFixed(2)}&end=${end.toFixed(2)}`),
+  /** Visage d'une zone tracée à la main. face = null : déjà dans la liste, à la place index. */
+  addScanFace: (id: string, body: { start: number; end: number; t: number; box: Box }) =>
+    request<{ index: number; face: ScanFace | null }>("POST", `/api/videos/${id}/scan/faces`, body),
+  deleteScanFace: (id: string, faceId: string) => request<{ ok: boolean }>("DELETE", `/api/videos/${id}/scan/faces/${faceId}`),
 
   // Session de la vidéo (personnes choisies pour ce rendu)
   createFaceSet: (files: File[] = []) => {
@@ -294,6 +318,7 @@ export const api = {
   movePhoto: (pid: string, photoId: string, person: string | "new") =>
     request<{ moved_to: string; source_exists: boolean }>("PATCH", `/api/people/${pid}/photos/${photoId}`, { person }),
   framing: (pid: string) => request<PersonFraming>("GET", `/api/people/${pid}/framing`),
+  setReference: (pid: string, photoId: string | null) => request<PersonFraming>("PUT", `/api/people/${pid}/reference`, { photo_id: photoId }),
   deletePhoto: (pid: string, photoId: string) =>
     request<{ ok: boolean; person_exists: boolean }>("DELETE", `/api/people/${pid}/photos/${photoId}`),
   importToLibrary: (files: File[]) => {

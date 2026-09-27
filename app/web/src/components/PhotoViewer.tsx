@@ -19,11 +19,16 @@ export function PhotoViewer({
   framingError,
   onIndex,
   onClose,
+  onChooseReference,
+  choosing,
 }: {
   photos: Photo[];
   index: number | null;
   framing?: PersonFraming;
   framingError?: string;
+  /** Choix de la photo du niveau 4 (null : retour au choix automatique). Sans ce rappel : simple visionneuse. */
+  onChooseReference?: (photoId: string | null) => void;
+  choosing?: boolean;
   onIndex: (i: number) => void;
   onClose: () => void;
 }) {
@@ -113,7 +118,25 @@ export function PhotoViewer({
                   <PersonStanding className="size-3.5" /> {text.label}
                 </span>
                 <span className="text-white/70">{text.hint}</span>
-                {isReference && <span className="rounded-full bg-white/10 px-2.5 py-1 text-white/90">Photo utilisée au niveau 4</span>}
+                {isReference && (
+                  <span className="rounded-full bg-white/10 px-2.5 py-1 text-white/90">
+                    Photo utilisée au niveau 4{framing?.manual ? " (ton choix)" : " (choix automatique)"}
+                  </span>
+                )}
+                {onChooseReference && !isReference && (
+                  <button
+                    onClick={() => onChooseReference(photo.id)}
+                    disabled={choosing}
+                    className="rounded-full bg-accent px-3 py-1 font-medium text-accent-ink hover:brightness-110 disabled:opacity-60"
+                  >
+                    Utiliser pour le niveau 4
+                  </button>
+                )}
+                {onChooseReference && isReference && framing?.manual && (
+                  <button onClick={() => onChooseReference(null)} disabled={choosing} className="rounded-full px-3 py-1 text-white/70 underline-offset-2 hover:underline">
+                    Revenir au choix automatique
+                  </button>
+                )}
               </>
             ) : framingError ? (
               <span className="text-white/50">Cadrage indisponible : {framingError}</span>
