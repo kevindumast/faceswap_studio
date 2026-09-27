@@ -29,7 +29,7 @@ export function SegmentStep({ video, status, selection, onChange, onNext }: Prop
           <div className="flex items-center gap-4">
             <div className="text-right">
               <div className="flex items-center justify-end gap-1.5 text-[13px] text-muted">
-                <Cpu className="size-3.5" /> Calcul estimé · 1 visage ({status?.device === "cuda" ? "GPU" : "CPU"})
+                <Cpu className="size-3.5" /> Calcul estimé · 1 visage · {status?.engine.label ?? "CPU"}
               </div>
               <div className="font-mono text-lg tabular">≈ {duration(estimate)}</div>
             </div>

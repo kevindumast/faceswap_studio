@@ -270,8 +270,8 @@ function GpuOption({ checked, onChange, configured, required }: { checked: boole
           </span>
           <span className="mt-0.5 block text-[13px] text-muted">
             {configured
-              ? "Plus rapide, mais consomme ton quota ZeroGPU. Décoché : calcul sur ton CPU."
-              : "Aucun GPU branché : le calcul se fait sur ton CPU."}
+              ? "Consomme ton quota ZeroGPU. Décoché : calcul sur ce PC."
+              : "Aucun GPU ZeroGPU branché : le calcul se fait sur ce PC."}
           </span>
         </span>
       </label>

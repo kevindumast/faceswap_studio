@@ -1,6 +1,16 @@
 # Configuration du pipeline et de l'appli. Tous les chemins sont relatifs à la racine du repo.
 
-device: cpu            # cpu | cuda  (cuda = onnxruntime-gpu requis)
+# Moteur de calcul local :
+#   auto : la carte graphique si elle est installée (CUDA, puis DirectML), sinon le CPU  ← recommandé
+#   cpu  : toujours disponible (paquet onnxruntime)
+#   dml  : carte graphique via DirectML, Windows, toutes marques (paquet onnxruntime-directml)
+#   cuda : carte NVIDIA via CUDA (paquet onnxruntime-gpu[cuda,cudnn]) ; carte choisie par cuda_device_id
+# Passer ce PC sur la carte graphique : scripts\activer_gpu.ps1 (retour au CPU : scripts\activer_gpu.ps1 -Cpu)
+device: auto
+cuda_device_id: 0
+# DirectML sur un portable à deux cartes : split = le swap sur la carte la plus puissante (mémoire dédiée),
+# l'analyse (détection, identité, segmentation) sur l'autre. ×3,5 plus rapide que tout sur la MX450 (2 Go saturés).
+dml_placement: split
 det_size: 640          # taille d'entrée du détecteur (320 = plus rapide, moins précis)
 
 paths:
@@ -25,8 +35,10 @@ models:
 levels:
   face:
     sec_per_frame: 2.2
+    sec_per_frame_gpu: 0.35     # MX450 + Iris Xe (DirectML réparti), mesuré
   face_tone:
     sec_per_frame: 2.9          # ≈ visage + 0,4 s de segmentation / recoloriage par visage
+    sec_per_frame_gpu: 0.5
     tone_strength_l: 0.5        # part de la luminosité transférée (1 = tout, 0 = garde l'éclairage de la scène)
     tone_smoothing: 0.7         # EMA des stats de teint entre images (anti-scintillement)
 

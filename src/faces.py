@@ -6,7 +6,7 @@ from functools import lru_cache
 
 import numpy as np
 
-from .config import load_config, providers
+from .config import accelerator, load_config, providers
 
 
 class ModelsMissing(RuntimeError):
@@ -25,9 +25,10 @@ def analyzer():
     if not any(pack.glob("*.onnx")):
         raise ModelsMissing(f"Modèles absents dans {pack}. Lancez : python scripts/download_models.py")
     # Seuls détection + reconnaissance : on saute landmarks 3D / âge / genre (gros gain CPU).
-    app = FaceAnalysis(name=str(pack), allowed_modules=["detection", "recognition"], providers=providers(cfg))
+    app = FaceAnalysis(name=str(pack), allowed_modules=["detection", "recognition"], providers=providers(cfg, role="analysis"))
     size = int(cfg.det_size)
-    app.prepare(ctx_id=0 if cfg.device == "cuda" else -1, det_size=(size, size))
+    # ctx_id < 0 force insightface à repasser la détection sur CPU : on ne le fait que sans carte graphique.
+    app.prepare(ctx_id=0 if accelerator(cfg) != "cpu" else -1, det_size=(size, size))
     return app
 
 

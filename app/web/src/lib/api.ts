@@ -106,8 +106,11 @@ export type Job = {
   created_at: number;
 };
 
+export type Engine = { accelerator: "cpu" | "dml" | "cuda"; label: string; gpus: string[]; error: string | null };
+
 export type Status = {
   device: string;
+  engine: Engine;
   ffmpeg: boolean;
   models: boolean;
   worker: boolean;

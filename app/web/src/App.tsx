@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { History } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { api, type Job, type Level, type Mapping, type Video } from "./lib/api";
+import { api, type Job, type Level, type Mapping, type Status, type Video } from "./lib/api";
 import { Stepper } from "./components/Stepper";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { Button, cx } from "./components/ui";
@@ -179,10 +179,17 @@ export default function App() {
   );
 }
 
-function EngineStatus({ data, error }: { data?: { worker: boolean; models: boolean; ffmpeg: boolean; device: string }; error: boolean }) {
+function EngineStatus({ data, error }: { data?: Status; error: boolean }) {
   let tone: "ok" | "warn" | "down" = "ok";
-  let label = `Moteur prêt · ${data?.device === "cuda" ? "GPU" : "CPU"}`;
+  const engine = data?.engine;
+  const gpus = engine?.gpus.length ? ` · ${engine.gpus.join(" + ")}` : "";
+  let label = `Moteur prêt · ${engine?.label ?? "CPU"}${gpus}`;
   let title = "API, worker, modèles et ffmpeg opérationnels.";
+  if (engine?.error) {
+    tone = "warn";
+    label = "Moteur mal configuré · CPU";
+    title = engine.error;
+  }
   if (error) {
     tone = "down";
     label = "API hors ligne";

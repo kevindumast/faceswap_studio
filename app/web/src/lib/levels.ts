@@ -55,7 +55,7 @@ export const LEVELS: LevelInfo[] = [
     tagline: "Toi, avec tes habits, à sa place",
     changes: ["Tête, corps et habits de ta photo en pied", "Mouvements et expressions du clip conservés"],
     alerts: [
-      "Nécessite l'option GPU (ZeroGPU) : impossible sur CPU.",
+      "Nécessite l'option GPU (ZeroGPU) : impossible sur ce PC.",
       "Sortie en 360p ou 480p, moins nette que l'original.",
       "10 s maximum, une seule personne à la fois.",
       "Mains, objets tenus et décor autour de la personne légèrement régénérés.",

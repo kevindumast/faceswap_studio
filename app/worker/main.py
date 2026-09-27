@@ -11,6 +11,7 @@ from pathlib import Path
 
 from app import db
 from app.api.routes_faces import load_person_assets
+from src.config import accelerator
 from src.levels import FACE
 from src.pipeline import Cancelled, FaceMapping, RenderOptions, render
 
@@ -61,7 +62,7 @@ def run_job(job: dict) -> None:
     # Vitesse ramenée à un seul visage et mémorisée par (niveau, moteur), pour que les estimations restent justes
     # (même formule que le frontend : chaque visage en plus ≈ +75 %).
     factor = 1 + 0.75 * max(0, len(mappings) - 1)
-    db.set_meta(f"spf:{level}:cpu", str(stats.sec_per_frame / factor))
+    db.set_meta(f"spf:{level}:{accelerator()}", str(stats.sec_per_frame / factor))
     db.update("jobs", job_id, status="done", finished_at=time.time(), sec_per_frame=stats.sec_per_frame,
               warnings=stats.warnings, done=stats.frames, total=stats.frames)
 

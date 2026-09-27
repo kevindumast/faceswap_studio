@@ -35,7 +35,7 @@ export function LevelPicker({ value, onChange, status }: { value: Level; onChang
     <section className="mb-6">
       <div className="mb-3 flex items-baseline justify-between">
         <h2 className="text-[13px] font-medium tracking-wide text-faint uppercase">Niveau de transformation</h2>
-        <span className="text-[12px] text-muted">Tout tourne sur ton CPU, sauf le niveau 4</span>
+        <span className="text-[12px] text-muted">Tout tourne sur ce PC ({status?.engine.label ?? "CPU"}), sauf le niveau 4</span>
       </div>
       <div role="radiogroup" aria-label="Niveau de transformation" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {LEVELS.map((lvl) => {
@@ -77,11 +77,11 @@ export function LevelPicker({ value, onChange, status }: { value: Level; onChang
               <div className="mt-auto flex flex-wrap gap-1.5 pt-1">
                 {lvl.gpuOnly ? (
                   <Badge tone="warn" icon={<Zap className="size-3" />}>
-                    GPU requis
+                    ZeroGPU requis
                   </Badge>
                 ) : (
                   <Badge tone="ok" icon={<Cpu className="size-3" />}>
-                    CPU ✓{s ? ` · ${s.sec_per_frame.toFixed(1).replace(".", ",")} s/img` : ""}
+                    Ce PC ✓{s ? ` · ${s.sec_per_frame.toFixed(s.sec_per_frame < 1 ? 2 : 1).replace(".", ",")} s/img` : ""}
                   </Badge>
                 )}
                 {lvl.experimental && (

@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from app import db
 from src import media
 from src.config import ROOT, load_config
+from src.hardware import engine_status
 from src.levels import FACE
 
 from . import routes_faces, routes_jobs, routes_models, routes_videos
@@ -51,8 +52,10 @@ def status() -> dict:
     except media.MediaError:
         ffmpeg_ok = False
     heartbeat = float(db.get_meta("worker_heartbeat") or 0)
+    engine = engine_status()
     return {
-        "device": cfg.device,
+        "device": engine["accelerator"],
+        "engine": engine,
         "ffmpeg": ffmpeg_ok,
         "models": (models / cfg.models.inswapper).is_file() and any((models / cfg.models.detector_pack).glob("*.onnx")),
         "worker": time.time() - heartbeat < 10,
