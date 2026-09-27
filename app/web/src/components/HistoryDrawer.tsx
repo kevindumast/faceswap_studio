@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { Download, History, Loader2, Trash2, X } from "lucide-react";
 import { useEffect } from "react";
 import { api, type Job } from "../lib/api";
+import { parseStage } from "../lib/stages";
 import { seconds } from "../lib/time";
 import { Button, cx } from "./ui";
 
@@ -81,7 +82,10 @@ export function HistoryDrawer({ open, onClose, onOpenJob }: { open: boolean; onC
                           )}
                         >
                           {LABEL[j.status]}
-                          {j.status === "running" && j.total ? ` ${Math.round((j.done / j.total) * 100)} %` : ""}
+                          {j.status === "running" && parseStage(j.stage).key === "wake" ? " · réveil du Space" : ""}
+                          {j.status === "running" && j.total && ["swap", "pose", "mask", "generate"].includes(parseStage(j.stage).key ?? "")
+                            ? ` ${Math.round((j.done / j.total) * 100)} %`
+                            : ""}
                         </span>
                       </div>
                     </button>

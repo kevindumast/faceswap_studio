@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowLeft, ArrowRight, Check, Clapperboard, Cpu, Download, Film, Loader2, Pause, Play, RotateCcw, Scissors, Sparkles, Wand2, X, Zap } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ApiError, api, type Job, type JobParams, type Level, type Mapping, type Resolution, type Status, type Video } from "../lib/api";
 import { levelInfo } from "../lib/levels";
 import { faceIndex, styleOf } from "../lib/people";
@@ -9,6 +9,9 @@ import { cappedFps, duration, seconds, timecode } from "../lib/time";
 import { Button, Card, Notice, ProgressBar, SectionTitle, SegmentedControl, Switch, cx } from "../components/ui";
 import { Compare } from "../components/Compare";
 import { openEngineSettings } from "../components/EngineSettings";
+import { chrono } from "../components/SpaceStatus";
+import { ReferenceThumb } from "../components/PersonReference";
+import { parseStage, type StageKey } from "../lib/stages";
 import type { Selection } from "../components/trimmer/Trimmer";
 import { PersonBadge } from "./FacesStep";
 
@@ -96,13 +99,15 @@ function Setup(p: Props) {
   // Le swap domine le temps de calcul : chaque visage remplacé en plus coûte ~75 % d'une passe.
   const swapFactor = 1 + 0.75 * Math.max(0, active.length - 1);
   const spf = p.status?.levels[p.level]?.sec_per_frame ?? p.status?.sec_per_frame ?? 2.2;
-  // Niveau 4 : son propre Space (Wan2.2-Animate), une seule personne, durée limitée, résolution au choix.
+  // Niveau 4 : son propre Space (Wan2.2-Animate), 1 ou 2 personnes (un passage chacune), durée limitée, résolution au choix.
   const isCharacter = p.level === "character";
   const character = p.status?.gpu.character;
   const [resolution, setResolution] = useState<Resolution>("360p");
   const maxCharacter = character?.max_s ?? 10;
   const tooLong = isCharacter && len > maxCharacter + 0.01;
-  const notOne = isCharacter && active.length !== 1;
+  const maxPeople = character?.max_people ?? 2;
+  const people = Math.max(1, active.length);
+  const badCount = isCharacter && active.length > maxPeople;
   const gpuConfigured = isCharacter ? !!character?.configured : !!p.status?.gpu.configured;
   const blockedByGpu = !!info.gpuOnly && !useGpu;
   // Mode « vidéo complète » : le reste du clip est seulement réencodé (≈ 4× plus vite que le temps réel).
@@ -111,7 +116,8 @@ function Setup(p: Props) {
   const gpuSpf = p.status?.gpu.sec_per_frame?.[p.level] ?? 0.1;
   const characterPerS = character?.gpu_s_per_second[resolution] ?? (resolution === "480p" ? 26 : 12);
   const characterSteps = character?.steps ?? 6;
-  const gpuSeconds = isCharacter ? characterGpuSeconds(len, characterPerS, characterSteps) : frames * gpuSpf * swapFactor;
+  // Niveau 4 : un passage GPU par personne remplacée, l'un après l'autre.
+  const gpuSeconds = isCharacter ? characterGpuSeconds(len, characterPerS, characterSteps) * people : frames * gpuSpf * swapFactor;
   const quotaLeft = (p.status?.gpu.free_quota_s ?? 300) - (p.status?.gpu.used_today_s ?? 0);
   const estimate = useGpu
     ? gpuSeconds + (isCharacter ? 90 : 60) + (output === "full" ? fullExtra : 0)
@@ -188,9 +194,11 @@ function Setup(p: Props) {
                         <PersonBadge style={styleOf(persons, m.person)} size="md" />
                       )}
                       <span>{person?.name ?? `Personne ${m.person}`}</span>
-                      <span className="text-[12px] text-muted">
-                        {person ? `${person.count} photo${person.count > 1 ? "s" : ""}` : ""}
-                      </span>
+                      {isCharacter && person ? (
+                        <ReferenceThumb person={person} />
+                      ) : (
+                        <span className="text-[12px] text-muted">{person ? `${person.count} photo${person.count > 1 ? "s" : ""}` : ""}</span>
+                      )}
                     </li>
                   );
                 })}
@@ -262,9 +270,15 @@ function Setup(p: Props) {
                   Le niveau 4 est limité à {seconds(maxCharacter)} (quota GPU) : raccourcis le passage ({seconds(len)} actuellement).
                 </Notice>
               )}
-              {notOne && (
+              {badCount && (
                 <Notice tone="warn" className="mt-3">
-                  Le niveau 4 remplace une seule personne à la fois : garde une seule association à l'étape Visages.
+                  Le niveau 4 remplace au plus {maxPeople} personnes par rendu : passe les autres sur « Ne pas remplacer » à l'étape Visages.
+                </Notice>
+              )}
+              {!badCount && active.length > 1 && (
+                <Notice tone="info" className="mt-3">
+                  {active.length} personnes = {active.length} passages sur le GPU, l'un après l'autre : environ {active.length}× plus de quota et de temps
+                  qu'une seule. Ton quota gratuit (5 min/jour) suffit pour 5 s en 360p.
                 </Notice>
               )}
             </div>
@@ -298,7 +312,8 @@ function Setup(p: Props) {
                 <div className="mt-0.5 font-mono text-[11px] text-faint tabular" title="Images du passage × secondes par image (mesurée sur ta machine) × visages remplacés">
                   {isCharacter ? (
                     <>
-                      {seconds(len)} × {Math.round(characterPerS)} s de GPU/s ({resolution}, {characterSteps} étapes) + ~1 min 30 d'envoi et de recollage
+                      {seconds(len)} × {Math.round(characterPerS)} s de GPU/s ({resolution}, {characterSteps} étapes)
+                      {people > 1 ? ` × ${people} personnes` : ""} + ~1 min 30 d'envoi et de recollage
                     </>
                   ) : (
                     <>
@@ -314,8 +329,8 @@ function Setup(p: Props) {
                 variant="primary"
                 size="lg"
                 loading={launch.isPending}
-                disabled={!active.length || blockedByGpu || tooLong || notOne}
-                title={blockedByGpu ? "Ce niveau nécessite l'option GPU" : tooLong ? "Passage trop long pour le niveau 4" : notOne ? "Une seule personne au niveau 4" : undefined}
+                disabled={!active.length || blockedByGpu || tooLong || badCount}
+                title={blockedByGpu ? "Ce niveau nécessite l'option GPU" : tooLong ? "Passage trop long pour le niveau 4" : badCount ? `${maxPeople} personnes au plus au niveau 4` : undefined}
                 onClick={() => launch.mutate()}
                 icon={<Wand2 className="size-4" />}
               >
@@ -410,19 +425,105 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-const STAGES: { key: Job["stage"]; label: string }[] = [
+type Stage = { key: Job["stage"]; label: string };
+
+const STAGES: Stage[] = [
   { key: "cut", label: "Découpe" },
   { key: "swap", label: "Remplacement du visage" },
   { key: "assemble", label: "Assemblage + son" },
 ];
 
+/** Rendu sur ZeroGPU : réveil éventuel du Space, file du Space, attente d'un GPU, puis le calcul. */
+const REMOTE_WAIT: Stage[] = [
+  { key: "wake", label: "Réveil du Space" },
+  { key: "queue", label: "File d'attente du Space" },
+  { key: "gpu", label: "En attente d'un GPU" },
+];
+
+const REMOTE_STAGES: Stage[] = [STAGES[0], ...REMOTE_WAIT, { key: "swap", label: "Remplacement du visage (ZeroGPU)" }, STAGES[2]];
+
+const CHARACTER_STAGES: Stage[] = [
+  STAGES[0],
+  ...REMOTE_WAIT,
+  { key: "pose", label: "Squelette et visage" },
+  { key: "mask", label: "Silhouette" },
+  { key: "generate", label: "Génération de la personne" },
+  { key: "assemble", label: "Recollage + son" },
+];
+
+function stagesOf(j: Job): Stage[] {
+  if (j.params.level === "character") return CHARACTER_STAGES;
+  return j.params.use_gpu ? REMOTE_STAGES : STAGES;
+}
+
 function overall(j: Job): number {
   if (j.status === "queued") return 0;
-  if (j.stage === "cut") return 0.03;
-  if (j.stage === "swap") return 0.05 + 0.9 * (j.total ? j.done / j.total : 0);
-  if (j.stage === "assemble") return 0.97;
-  return 0;
+  const frac = j.total ? j.done / j.total : 0;
+  const { key, pass, passes } = parseStage(j.stage);
+  const before = (pass - 1) / passes; // part déjà faite par les passages précédents (niveau 4, une personne chacun)
+  switch (key) {
+    case "cut":
+      return 0.03;
+    case "wake":
+      return pass > 1 ? 0.07 + 0.88 * before : 0.04;
+    case "queue":
+      return pass > 1 ? 0.07 + 0.88 * before : 0.05;
+    case "gpu":
+      return pass > 1 ? 0.07 + 0.88 * before : 0.06;
+    case "swap":
+      return j.params.use_gpu ? 0.07 + 0.88 * frac : 0.05 + 0.9 * frac;
+    case "pose":
+    case "mask":
+    case "generate":
+      return 0.07 + 0.88 * (before + frac / passes); // progression du Space niveau 4, en ‰
+    case "assemble":
+      return 0.97;
+    default:
+      return 0;
+  }
 }
+
+/** Secondes passées dans l'étape en cours (mesurées dans le navigateur, depuis le dernier changement d'étape). */
+function useStageClock(stage: Job["stage"]): number {
+  const [since, setSince] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => setSince(Date.now()), [stage]);
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return Math.max(0, (now - since) / 1000);
+}
+
+/** Détail affiché à droite de l'étape active. */
+function stageDetail(j: Job, inStage: number): string | null {
+  switch (parseStage(j.stage).key) {
+    case "wake":
+      return `${chrono(j.done + inStage)} / ≈ ${duration(j.total)}`;
+    case "queue":
+      return j.total ? `${j.done + 1}ᵉ sur ${j.total}` : chrono(inStage);
+    case "gpu":
+      return chrono(inStage);
+    case "swap":
+      return `${j.done}/${j.total}`;
+    case "pose":
+    case "mask":
+    case "generate":
+      return j.total ? `${Math.round((j.done / j.total) * 100)} %` : null;
+    default:
+      return null;
+  }
+}
+
+const REMOTE_HINT: Partial<Record<StageKey, string>> = {
+  wake: "Le Space dormait : il recharge son modèle (≈ 3 min, ou 20 à 40 min pour le niveau 4). Aucun quota consommé pendant l'attente.",
+  queue: "Ton rendu attend son tour sur ton Space.",
+  gpu: "Le calcul est lancé : ZeroGPU attribue un GPU (file partagée avec les autres utilisateurs de Hugging Face).",
+  pose: "Calcul sur ZeroGPU : repérage du squelette et du visage de la personne choisie.",
+  mask: "Calcul sur ZeroGPU : découpe de sa silhouette.",
+  generate: "Calcul sur ZeroGPU : la personne de ta photo est générée à sa place.",
+  swap: "Calcul sur ZeroGPU : remplacement des visages.",
+};
 
 /** Rendu en pause : ce qui est déjà calculé est gardé, la reprise repart à la même image. */
 function PausedView({ job, video }: { job: Job; video: Video }) {
@@ -505,16 +606,30 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
   const cancel = useMutation({ mutationFn: () => api.cancelJob(job.id), onSuccess: (j) => qc.setQueryData(["job", j.id], j) });
   const pause = useMutation({ mutationFn: () => api.pauseJob(job.id), onSuccess: (j) => qc.setQueryData(["job", j.id], j) });
   const frac = overall(job);
-  const stageIdx = STAGES.findIndex((s) => s.key === job.stage);
+  const stages = stagesOf(job);
+  const { key: stageKey, pass, passes } = parseStage(job.stage);
+  const stageIdx = stages.findIndex((s) => s.key === stageKey);
+  const passLabel = passes > 1 ? `personne ${pass}/${passes}` : null;
   const queued = job.status === "queued";
-  const hasPreview = job.stage === "swap" || job.stage === "assemble";
+  const remote = job.params.use_gpu;
+  // Aperçu en direct seulement pour un rendu sur ce PC (le Space ne renvoie que le résultat final).
+  const hasPreview = !remote && (stageKey === "swap" || stageKey === "assemble");
+  const inStage = useStageClock(job.stage);
   const info = video.info!;
 
   return (
     <div>
       <SectionTitle
         eyebrow="Étape 4 · Rendu"
-        title={queued ? "En file d'attente…" : job.status === "cancelling" ? "Annulation…" : job.status === "pausing" ? "Mise en pause…" : "Rendu en cours"}
+        title={
+          queued
+            ? "En file d'attente…"
+            : job.status === "cancelling"
+              ? "Annulation…"
+              : job.status === "pausing"
+                ? "Mise en pause…"
+                : `Rendu en cours${passLabel ? ` · ${passLabel}` : ""}`
+        }
         subtitle={
           queued && !worker
             ? "Le worker n'est pas lancé : démarre scripts\\dev.ps1 pour que le rendu commence."
@@ -547,9 +662,14 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
         <div className="relative overflow-hidden rounded-[var(--radius-card)] bg-black ring-1 ring-line" style={{ aspectRatio: `${info.width} / ${info.height}` }}>
           {hasPreview && <img src={`${job.preview_url}?v=${job.done}`} alt="Dernière image calculée" className="absolute inset-0 size-full object-contain" />}
           {!hasPreview && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-muted">
-              <Clapperboard className="size-8 animate-pulse" />
-              <span className="text-sm">{queued ? "En attente du worker" : "Préparation de l'extrait"}</span>
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center text-muted">
+              {remote && !queued && stageKey !== "cut" ? <Zap className="size-8 animate-pulse text-warn" /> : <Clapperboard className="size-8 animate-pulse" />}
+              <span className="text-sm text-fg">
+                {queued ? "En attente du worker" : stageIdx >= 0 && stageKey !== "cut" ? stages[stageIdx].label : "Préparation de l'extrait"}
+                {!queued && passLabel && stageKey !== "cut" && stageKey !== "assemble" ? ` · ${passLabel}` : ""}
+                {!queued && stageDetail(job, inStage) ? <span className="ml-2 font-mono text-muted tabular">{stageDetail(job, inStage)}</span> : null}
+              </span>
+              {remote && !queued && stageKey && REMOTE_HINT[stageKey] && <span className="max-w-md text-[13px]">{REMOTE_HINT[stageKey]}</span>}
             </div>
           )}
           {hasPreview && (
@@ -567,7 +687,7 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
           <ProgressBar value={frac} className="mt-4 h-2" />
 
           <ol className="mt-6 space-y-1">
-            {STAGES.map((s, i) => {
+            {stages.map((s, i) => {
               const state = queued || i > stageIdx ? "todo" : i < stageIdx ? "done" : "active";
               return (
                 <li key={s.key} className={cx("flex items-center gap-3 rounded-lg px-2 py-2 text-sm", state === "active" && "bg-raised")}>
@@ -582,7 +702,10 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
                     {state === "done" ? <Check className="size-3.5" strokeWidth={3} /> : state === "active" ? <Loader2 className="size-3.5 animate-spin" /> : i + 1}
                   </span>
                   <span className={cx(state === "todo" ? "text-faint" : "text-fg")}>{s.label}</span>
-                  {s.key === "swap" && state !== "todo" && (
+                  {state === "active" && stageDetail(job, inStage) && (
+                    <span className="ml-auto font-mono text-[12px] text-muted tabular">{stageDetail(job, inStage)}</span>
+                  )}
+                  {state === "done" && s.key === "swap" && !remote && (
                     <span className="ml-auto font-mono text-[12px] text-muted tabular">
                       {job.done}/{job.total}
                     </span>
@@ -598,8 +721,10 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
               <div className="font-mono tabular">{job.elapsed ? duration(job.elapsed) : "—"}</div>
             </div>
             <div>
-              <div className="text-faint">Vitesse</div>
-              <div className="font-mono tabular">{job.elapsed && job.done ? `${(job.elapsed / job.done).toFixed(1).replace(".", ",")} s/img` : "—"}</div>
+              <div className="text-faint">{remote ? "Moteur" : "Vitesse"}</div>
+              <div className="font-mono tabular">
+                {remote ? "ZeroGPU" : job.elapsed && job.done ? `${(job.elapsed / job.done).toFixed(1).replace(".", ",")} s/img` : "—"}
+              </div>
             </div>
           </div>
         </Card>

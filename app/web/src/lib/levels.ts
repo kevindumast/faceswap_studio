@@ -57,7 +57,7 @@ export const LEVELS: LevelInfo[] = [
     alerts: [
       "Nécessite ton 2e Space ZeroGPU (Wan2.2-Animate) : impossible sur ce PC.",
       "Personne générée en 360p ou 480p puis recollée : la zone autour d'elle est moins nette que le reste de l'image.",
-      "10 s maximum, une seule personne à la fois.",
+      "10 s maximum, 2 personnes au plus : un passage GPU par personne (2 personnes ≈ 2× plus de quota).",
       "Mains, objets tenus et décor autour de la personne régénérés : petits défauts possibles.",
       "Il faut une photo en pied, habits visibles (sinon le corps est inventé).",
       "≈ 2 min de GPU pour 5 s en 360p : 2 clips par jour environ avec le quota gratuit (5 min), bien plus en PRO.",

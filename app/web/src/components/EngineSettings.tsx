@@ -4,6 +4,7 @@ import { Check, Copy, Cpu, ExternalLink, Loader2, PersonStanding, PlugZap, Trash
 import { useEffect, useState } from "react";
 import { api, type Status } from "../lib/api";
 import { duration } from "../lib/time";
+import { SpaceLive } from "./SpaceStatus";
 import { Button, Notice, ProgressBar, cx } from "./ui";
 
 const DEPLOY_CMD = String.raw`.venv\Scripts\python.exe scripts\deploy_space.py --space ton-pseudo/faceswap-gpu --save`;
@@ -207,6 +208,7 @@ export function EngineSettings({ open, onClose, status }: { open: boolean; onClo
 
                 {z?.configured && (
                   <div className="space-y-3">
+                    <SpaceLive kind="faces" />
                     <Button variant="primary" size="md" loading={test.isPending} onClick={() => test.mutate()} icon={<PlugZap className="size-4" />}>
                       Tester la connexion
                     </Button>
@@ -266,6 +268,7 @@ export function EngineSettings({ open, onClose, status }: { open: boolean; onClo
                 )}
                 {z?.character_configured && (
                   <div className="space-y-3">
+                    <SpaceLive kind="character" />
                     <Button variant="secondary" size="md" loading={testCharacter.isPending} onClick={() => testCharacter.mutate()} icon={<PlugZap className="size-4" />}>
                       Tester le Space du niveau 4
                     </Button>

@@ -164,3 +164,43 @@ def test_legacy_session_is_imported(make_session):
     assert [len(library.load(pid)["photos"]) for pid in created] == [2, 1]
     assert json.loads((d / "set.json").read_text(encoding="utf-8"))["people"] == created
     assert library.import_legacy_set(d) == []                  # déjà reprise : ne refait rien
+
+
+def test_manual_face_added_merged_and_removed(client, sample_video, monkeypatch):
+    """Visage indiqué à la main à l'étape Visages : ajouté en fin de liste, gardé avec la vidéo, supprimable."""
+    from app import db
+    from app.api import routes_videos
+    from src import media
+    from src.scan import Person
+
+    video = db.new_id()   # vidéo à part : le test de nettoyage vide la table des vidéos
+    db.insert("videos", id=video, kind="upload", title="mire", status="ready", progress=1,
+              source=str(sample_video), info=media.probe(sample_video).to_dict(), created_at=time.time())
+
+    def person(t, box):
+        return Person(t=t, box=box, score=0.8, height_px=50, crop=np.zeros((112, 112, 3), np.uint8),
+                      embedding_sum=np.ones(512), times={t}, seen_at=[(t, box)])
+
+    found = [0.1, 0.1, 0.2, 0.3]
+    monkeypatch.setattr(routes_videos, "scan_passage",
+                        lambda src, s, e: ([person(2.0, found)], {2.0: np.zeros((360, 640, 3), np.uint8)}))
+    routes_videos._scan_cache.clear()
+    base = f"/api/videos/{video}/scan"
+    passage = {"start": 1, "end": 7}
+    assert client.get(base, params=passage).json()["faces"][0]["seen_at"] == [{"t": 2.0, "box": found}]
+
+    region = {**passage, "t": 2.0, "box": [0.5, 0.5, 0.6, 0.7]}
+    monkeypatch.setattr(routes_videos, "face_in_region", lambda src, t, box: None)
+    assert client.post(f"{base}/faces", json=region).status_code == 422               # rien dans le cadre
+    monkeypatch.setattr(routes_videos, "face_in_region", lambda src, t, box: person(t, found))
+    assert client.post(f"{base}/faces", json=region).json() == {"index": 0, "face": None}   # déjà dans la liste
+
+    monkeypatch.setattr(routes_videos, "face_in_region", lambda src, t, box: person(t, [0.5, 0.5, 0.6, 0.7]))
+    added = client.post(f"{base}/faces", json=region).json()
+    assert added["index"] == 1 and added["face"]["manual"] and added["face"]["id"]
+    assert [f.get("manual", False) for f in client.get(base, params=passage).json()["faces"]] == [False, True]
+    assert len(client.get(base, params={"start": 3, "end": 8}).json()["faces"]) == 1    # hors de ce passage-là
+
+    assert client.delete(f"{base}/faces/{added['face']['id']}").json() == {"ok": True}
+    assert len(client.get(base, params=passage).json()["faces"]) == 1
+    routes_videos._scan_cache.clear()

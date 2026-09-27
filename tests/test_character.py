@@ -66,6 +66,13 @@ def test_reference_is_the_most_full_body_photo(tmp_path):
         choose_reference([tmp_path / "x"], ratio=lambda p: None)
 
 
+def test_framing_categories():
+    from src.character import Reference, framing_of
+
+    assert [framing_of(r) for r in (0.10, 0.2154, 0.45, None)] == ["full", "half", "portrait", "none"]
+    assert Reference(Path("x"), 0.12).full_body and not Reference(Path("x"), 0.2154).full_body
+
+
 def test_gpu_estimate_matches_the_space():
     from src.character import gpu_seconds
 
@@ -155,7 +162,7 @@ def test_settings_store_the_level4_space(client):
 def test_level4_rules(client, ready_video, make_session, monkeypatch):
     from src.config import load_config
 
-    set_id, ids = make_session({"Kevin": [np.ones(512)], "Pote": [-np.ones(512)]})
+    set_id, ids = make_session({"Kevin": [np.ones(512)], "Pote": [-np.ones(512)], "Tiers": [np.eye(512)[0]]})
     one = _body(ready_video, set_id, [ids["Kevin"]], use_gpu=True, resolution="480p")
     r = client.post("/api/jobs", json={**one, "use_gpu": False})
     assert r.status_code == 422 and "option GPU" in r.json()["detail"]
@@ -164,8 +171,11 @@ def test_level4_rules(client, ready_video, make_session, monkeypatch):
 
     client.put("/api/settings/zerogpu", json={"space": "kevin/faceswap-gpu", "token": "hf_x", "key": "k",
                                               "character_space": "kevin/faceswap-character"})
-    r = client.post("/api/jobs", json=_body(ready_video, set_id, [ids["Kevin"], ids["Pote"]], use_gpu=True))
-    assert r.status_code == 422 and "une seule personne" in r.json()["detail"]
+    r = client.post("/api/jobs", json=_body(ready_video, set_id, [ids["Kevin"], ids["Pote"], ids["Tiers"]], use_gpu=True))
+    assert r.status_code == 422 and "1 à 2 personnes" in r.json()["detail"]
+    two = client.post("/api/jobs", json=_body(ready_video, set_id, [ids["Kevin"], ids["Pote"]], use_gpu=True))
+    assert two.status_code == 200                                                  # 2 personnes : 2 passages
+    client.post(f"/api/jobs/{two.json()['id']}/cancel")
     monkeypatch.setitem(load_config()["levels"]["character"], "max_s", 5.5)
     r = client.post("/api/jobs", json=one)
     assert r.status_code == 422 and "limité à 5.5 s" in r.json()["detail"]
@@ -225,16 +235,25 @@ def test_worker_level4_end_to_end_with_fake_space(sample_video, tmp_path, monkey
     sent = {}
 
     class FakeSpace:
-        def replace(self, clip, reference, payload, out, mask_out, on_progress=None, should_cancel=None):
+        def replace(self, clip, reference, payload, out, mask_out, on_progress=None, should_cancel=None, on_stage=None):
             sent.update(payload=payload, clip=media.probe(clip), reference=reference)
+            on_stage("queue", 1, 2, None)                     # 2e dans la file du Space
+            on_stage("gpu", 0, 0, None)                       # calcul lancé, en attente d'un GPU
+            on_stage("progress", 500, 1000, "génération")     # étape annoncée par le Space
             _solid(out, (0, 0, 255), (320, 176), "30", 6.0)
             _solid(mask_out, (255, 255, 255), (320, 176), "30", 6.0, right_half=True)
-            on_progress(500, 1000)
             return {"frames": 180, "gpu_seconds": 120.0, "warnings": ["test"]}
 
     photo = tmp_path / "moi.jpg"
     photo.write_bytes(b"jpg")
     monkeypatch.setattr(worker.ZeroGPUClient, "from_settings", classmethod(lambda cls, kind="faces": FakeSpace()))
+    woken = []
+
+    def fake_wait(kind, on_wait, should_cancel=None, poll=10.0):
+        woken.append(kind)
+        on_wait(12.4, 1800)                                   # Space endormi : 12 s de réveil sur ~30 min
+
+    monkeypatch.setattr(worker, "wait_until_ready", fake_wait)
     monkeypatch.setattr(worker, "choose_reference", lambda photos: Reference(photos[0], 0.4))   # portrait seulement
     person = PersonAssets(source=SourceFace(np.ones(512, np.float32) / np.sqrt(512)), photos=[photo])
     mapping = FaceMapping(person, target={"t": 3.0, "box": [0.4, 0.1, 0.6, 0.4]}, label="Visage 1")
@@ -242,12 +261,170 @@ def test_worker_level4_end_to_end_with_fake_space(sample_video, tmp_path, monkey
     job = {"id": "test", "params": {"resolution": "360p"}}
     out = tmp_path / "job"
     progress = []
-    stats = worker.run_character(job, sample_video, opts, mapping, out, lambda *a: progress.append(a))
+    stats = worker.run_character(job, sample_video, opts, [mapping], out, lambda *a: progress.append(a))
 
     assert sent["payload"]["t"] == pytest.approx(2.0) and sent["payload"]["resolution"] == "360p"
+    assert sent["payload"]["mask_grid"] == [1, 1]                                  # seul : rectangle officiel
     assert not sent["clip"].has_audio and sent["reference"] == photo
     result = media.probe(out / "result.mp4")
     assert result.duration == pytest.approx(6.0, abs=0.1) and result.has_audio and (result.width, result.fps) == (640, 25)
     assert stats.frames == 150 and "test" in stats.warnings and any("photo en pied" in w for w in stats.warnings)
-    assert ("swap", 500, 1000) in progress
-    assert not (out / "generated.mp4").exists()
+    assert woken == ["character"]
+    stages = [a for a in progress if a[0] in ("wake", "queue", "gpu", "generate")]
+    assert stages == [("wake", 12, 1800), ("queue", 1, 2), ("gpu", 0, 0), ("generate", 500, 1000)]
+    assert not list(out.glob("generated*.mp4")) and not (out / "cut_silent.mp4").exists()
+
+
+def test_worker_level4_two_people_in_two_passes(sample_video, tmp_path, monkeypatch):
+    """2e passage sur la vidéo où la 1re personne est déjà remplacée ; masque en grille ; étapes « @k/2 »."""
+    import cv2
+
+    from app.worker import main as worker
+    from src.character import Reference
+    from src.identity import SourceFace
+    from src.levels import PersonAssets
+    from src.pipeline import FaceMapping, RenderOptions
+
+    calls = []
+
+    class FakeSpace:
+        def replace(self, clip, reference, payload, out, mask_out, on_progress=None, should_cancel=None, on_stage=None):
+            cap = cv2.VideoCapture(str(clip))
+            _, first = cap.read()
+            cap.release()
+            calls.append({"payload": payload, "reference": reference.name, "right_red": first[:, 400:, 2].mean() > 200})
+            on_stage("progress", 1000, 1000, "génération")
+            _solid(out, (0, 0, 255), (320, 176), "30", 6.0)                        # rouge sur la moitié droite
+            _solid(mask_out, (255, 255, 255), (320, 176), "30", 6.0, right_half=True)
+            return {"frames": 180, "gpu_seconds": 100.0, "warnings": []}
+
+    monkeypatch.setattr(worker.ZeroGPUClient, "from_settings", classmethod(lambda cls, kind="faces": FakeSpace()))
+    monkeypatch.setattr(worker, "wait_until_ready", lambda kind, on_wait, should_cancel=None, poll=10.0: None)
+    monkeypatch.setattr(worker, "choose_reference", lambda photos: Reference(photos[0], 0.1))
+    monkeypatch.setattr(worker, "face_ratio", lambda path: 0.2)          # photo choisie à la main : à mi-corps
+    mappings = []
+    for i, name in enumerate(("moi.jpg", "aurel.jpg")):
+        photo = tmp_path / name
+        photo.write_bytes(b"jpg")
+        person = PersonAssets(source=SourceFace(np.ones(512, np.float32) / np.sqrt(512)), photos=[photo])
+        mappings.append(FaceMapping(person, target={"t": 3.0, "box": [0.1 + 0.5 * i, 0.1, 0.3 + 0.5 * i, 0.4]}, label=name))
+    chosen = tmp_path / "choisie.jpg"
+    chosen.write_bytes(b"jpg")
+    mappings[0].person.reference = chosen                               # choisie dans la bibliothèque
+    opts = RenderOptions(start=1.0, end=7.0, output="segment", stabilize=True, ai_label=False, level="character")
+    progress = []
+    stats = worker.run_character({"id": "t2", "params": {"resolution": "360p"}}, sample_video, opts, mappings,
+                                 tmp_path / "job", lambda *a: progress.append(a))
+
+    assert [c["reference"] for c in calls] == ["choisie.jpg", "aurel.jpg"]
+    assert any(w.startswith("Personne 1 : photo à mi-corps") for w in stats.warnings)
+    assert not calls[0]["right_red"] and calls[1]["right_red"]      # le 2e passage voit la 1re personne remplacée
+    assert all(c["payload"]["mask_grid"] == [4, 8] for c in calls)  # plusieurs personnes : masque qui suit la silhouette
+    assert calls[1]["payload"]["box"][0] == pytest.approx(0.6)
+    assert [a for a in progress if a[0].startswith("generate")] == [("generate@1/2", 1000, 1000), ("generate@2/2", 1000, 1000)]
+    assert stats.frames == 150 and (tmp_path / "job" / "result.mp4").is_file()
+    assert not list((tmp_path / "job").glob("pass_*.mp4"))
+
+
+# --- Réveil et état du Space (faux Hugging Face) -------------------------------------------------------------------
+
+class _FakeHf:
+    """Suite d'états renvoyés par get_space_runtime ; restart_space enregistré."""
+
+    def __init__(self, stages):
+        self.stages, self.restarts = list(stages), []
+
+    def __call__(self, token=None):
+        return self
+
+    def get_space_runtime(self, space):
+        stage = self.stages.pop(0) if len(self.stages) > 1 else self.stages[0]
+        return SimpleNamespace(stage=stage, hardware=None, raw={"errorMessage": "OOM" if "ERROR" in stage else None})
+
+    def restart_space(self, space):
+        self.restarts.append(space)
+
+
+@pytest.fixture
+def spaces_configured():
+    from app import db
+    from app.worker import zerogpu_client as zg
+
+    for k, v in (("zerogpu_space", "kevin/gpu"), ("zerogpu_key", "k"), ("zerogpu_character_space", "kevin/character")):
+        db.set_meta(k, v)
+    zg._states.clear()
+    yield zg
+    for k in ("zerogpu_space", "zerogpu_key", "zerogpu_character_space", "space_waking:faces", "space_waking:character"):
+        db.set_meta(k, "")
+    zg._states.clear()
+
+
+def test_state_keeps_the_wake_chrono_until_ready(spaces_configured, monkeypatch):
+    import huggingface_hub
+
+    zg = spaces_configured
+    fake = _FakeHf(["SLEEPING", "SLEEPING", "APP_STARTING", "APP_STARTING", "RUNNING"])
+    monkeypatch.setattr(huggingface_hub, "HfApi", fake)
+    assert zg.state("character", max_age=0)["phase"] == "asleep"
+    woke = zg.wake("character")                                    # endormi → redémarré, chrono lancé
+    assert fake.restarts == ["kevin/character"] and woke["waking_since"] is not None
+    starting = zg.state("character", max_age=0)
+    assert starting["phase"] == "starting" and starting["waking_since"] == woke["waking_since"]
+    assert starting["expected_s"] == 1800
+    ready = zg.state("character", max_age=0)
+    assert ready["phase"] == "ready" and ready["waking_since"] is None
+    assert zg.wake("character")["phase"] == "ready" and len(fake.restarts) == 1   # déjà prêt : rien à faire
+
+
+def test_wait_until_ready_wakes_once_and_reports_the_chrono(spaces_configured, monkeypatch):
+    import huggingface_hub
+
+    zg = spaces_configured
+    fake = _FakeHf(["SLEEPING", "SLEEPING", "SLEEPING", "APP_STARTING", "APP_STARTING", "RUNNING"])
+    monkeypatch.setattr(huggingface_hub, "HfApi", fake)
+    seen = []
+    zg.wait_until_ready("faces", on_wait=lambda elapsed, expected: seen.append(expected), poll=0)
+    assert fake.restarts == ["kevin/gpu"] and seen and set(seen) == {180}
+
+
+def test_wait_until_ready_stops_on_a_broken_space_or_cancel(spaces_configured, monkeypatch):
+    import huggingface_hub
+
+    zg = spaces_configured
+    monkeypatch.setattr(huggingface_hub, "HfApi", _FakeHf(["RUNTIME_ERROR"]))
+    with pytest.raises(zg.ZeroGPUError, match="en erreur.*OOM"):          # une relance tentée, puis erreur claire
+        zg.wait_until_ready("faces", on_wait=lambda *a: None, poll=0)
+    monkeypatch.setattr(huggingface_hub, "HfApi", _FakeHf(["APP_STARTING"]))
+    with pytest.raises(zg.RemoteCancelled):
+        zg.wait_until_ready("faces", on_wait=lambda *a: None, should_cancel=lambda: True, poll=0)
+
+
+def test_state_api(client, spaces_configured, monkeypatch):
+    import huggingface_hub
+
+    fake = _FakeHf(["SLEEPING", "SLEEPING", "APP_STARTING"])
+    monkeypatch.setattr(huggingface_hub, "HfApi", fake)
+    assert client.get("/api/settings/zerogpu/state?kind=character").json()["phase"] == "asleep"
+    r = client.post("/api/settings/zerogpu/wake?kind=character").json()
+    assert fake.restarts == ["kevin/character"] and r["waking_since"]
+    from app import db
+
+    db.set_meta("zerogpu_character_space", "")
+    assert client.get("/api/settings/zerogpu/state?kind=character").json()["phase"] == "unconfigured"
+
+
+def test_reference_photo_chosen_by_hand(client, make_session):
+    from app import library
+
+    _, ids = make_session({"Kevin": [np.ones(512), np.ones(512)]})
+    pid = ids["Kevin"]
+    photos = [ph["id"] for ph in library.load(pid)["photos"]]
+    r = client.put(f"/api/people/{pid}/reference", json={"photo_id": photos[1]}).json()
+    assert r["reference"] == photos[1] and r["manual"] is True
+    assert library.assets(pid, "character").reference.name.startswith(photos[1])
+    assert client.put(f"/api/people/{pid}/reference", json={"photo_id": "inconnue"}).status_code == 404
+    library.delete_photo(pid, photos[1])                     # photo supprimée : retour au choix automatique
+    assert client.get(f"/api/people/{pid}/framing").json()["manual"] is False
+    assert library.assets(pid, "character").reference is None
+    client.put(f"/api/people/{pid}/reference", json={"photo_id": photos[0]})
+    assert client.put(f"/api/people/{pid}/reference", json={"photo_id": None}).json()["manual"] is False

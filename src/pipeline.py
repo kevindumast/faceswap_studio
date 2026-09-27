@@ -20,7 +20,7 @@ import numpy as np
 
 from . import media
 from .config import load_config
-from .faces import detect, detect_boxes, embed, iou
+from .faces import detect, detect_boxes, detect_in_region, embed, iou
 from .identity import source_from_dir
 from .levels import FACE, FACE_TONE, PersonAssets, make_strategy
 from .temporal import TargetTracker
@@ -182,15 +182,19 @@ def _reference_from_target(clip: Path, target: dict, size: tuple[int, int], cach
     t = round(float(target["t"]), 3)
     if t not in cache:
         frame = cv2.resize(media.extract_frame(clip, t), size)
-        cache[t] = detect(frame)
-    faces = cache[t]
-    if not faces:
-        return None
+        cache[t] = frame, detect(frame)
+    frame, faces = cache[t]
     w, h = size
     x1, y1, x2, y2 = target["box"]
     box = [x1 * w, y1 * h, x2 * w, y2 * h]
-    best = max(faces, key=lambda f: iou(f.bbox, box))
-    return best.normed_embedding if iou(best.bbox, box) > 0.2 else None
+    if faces:
+        best = max(faces, key=lambda f: iou(f.bbox, box))
+        if iou(best.bbox, box) > 0.2:
+            return best.normed_embedding
+    # Visage ajouté à la main à l'étape Visages, trop petit pour la détection sur l'image entière : on zoome dessus.
+    sc = load_config().get("scan", {})
+    face = detect_in_region(frame, target["box"], int(sc.get("det_size", 640)), float(sc.get("det_thresh", 0.3)))
+    return face.normed_embedding if face is not None else None
 
 
 class DuplicateDetector:

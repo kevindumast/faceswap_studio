@@ -27,6 +27,7 @@ class PersonAssets:
     source: SourceFace
     tone: object | None = None                     # tone.ToneStats
     photos: list[Path] = field(default_factory=list)
+    reference: Path | None = None                  # photo choisie pour le niveau 4 (sinon : la plus en pied)
 
 
 class Strategy:

@@ -1,3 +1,4 @@
+import type { StageKey } from "./stages";
 // Client de l'API FastAPI (même origine : proxy Vite en dev, FastAPI sert le build en prod).
 
 export type VideoInfo = {
@@ -47,7 +48,17 @@ export type UrlInfo = {
 };
 
 /** Photo d'une personne de la bibliothèque (toujours avec un visage détecté). */
-export type Photo = { id: string; name: string; crop_url: string; photo_url: string };
+/** crop_url : visage recadré (vignette) ; full_url : photo entière 1024 px (celle qu'utilise le niveau 4). */
+export type Photo = { id: string; name: string; crop_url: string; photo_url: string; full_url: string };
+/** Cadrage d'une photo pour le niveau 4 : de la tête aux pieds, mi-corps, portrait, ou visage introuvable. */
+export type Framing = "full" | "half" | "portrait" | "none";
+/** reference : photo retenue pour le niveau 4 (choisie à la main si manual, sinon auto_reference = la plus en pied). */
+export type PersonFraming = {
+  reference: string | null;
+  auto_reference: string | null;
+  manual: boolean;
+  photos: Record<string, { face_ratio: number | null; framing: Framing }>;
+};
 /** Personne de la bibliothèque : permanente, réutilisable dans toutes les vidéos. */
 export type Person = { id: string; name: string; count: number; cover_url: string | null; photos: Photo[]; created_at?: number; updated_at?: number };
 export type RejectedPhoto = { id: string; name: string; photo_url: string };
@@ -61,8 +72,22 @@ export type FaceSet = { id: string; persons: Person[]; rejected: RejectedPhoto[]
 export type Box = [number, number, number, number];
 export type DetectedFace = { box: Box; score: number; crop: string };
 export type FramesFaces = { t: number; width: number; height: number; frame: string; faces: DetectedFace[] };
-/** Une personne vue dans le passage (plusieurs images analysées), représentée par sa meilleure apparition. */
-export type ScanFace = { t: number; box: Box; score: number; seen: number; height_px: number; maybe_same: number | null; crop: string };
+/**
+ * Une personne vue dans le passage (plusieurs images analysées), représentée par sa meilleure apparition.
+ * seen_at : toutes ses apparitions ; manual / id : visage ajouté à la main (supprimable).
+ */
+export type ScanFace = {
+  t: number;
+  box: Box;
+  score: number;
+  seen: number;
+  height_px: number;
+  maybe_same: number | null;
+  seen_at?: Target[];
+  manual?: boolean;
+  id?: string;
+  crop: string;
+};
 export type PassageScan = { start: number; end: number; samples: number; faces: ScanFace[]; frames: Record<string, string>; width: number; height: number };
 
 export type Target = { t: number; box: Box };
@@ -108,7 +133,9 @@ export type Job = {
   status: "queued" | "running" | "cancelling" | "cancelled" | "done" | "error" | "pausing" | "paused";
   /** false pour ZeroGPU : le Space calcule tout l'extrait d'un coup. */
   pausable: boolean;
-  stage: "cut" | "swap" | "assemble" | null;
+  /** Rendu distant : wake (secondes écoulées / durée typique), queue (rang / taille), gpu, puis étapes du Space. */
+  /** Niveau 4 à plusieurs personnes : suffixe « @passage/passages » (ex. « generate@2/2 », voir lib/stages). */
+  stage: StageKey | `${StageKey}@${number}/${number}` | null;
   done: number;
   total: number;
   elapsed: number | null;
@@ -146,7 +173,15 @@ export type Status = {
     free_quota_s: number;
     sec_per_frame: Partial<Record<Level, number>>;
     /** Niveau 4 : Space dédié (Wan2.2-Animate) et de quoi estimer son temps de GPU. */
-    character: { configured: boolean; space: string | null; max_s: number; steps: number; gpu_s_per_second: Record<Resolution, number> };
+    character: {
+      configured: boolean;
+      space: string | null;
+      max_s: number;
+      steps: number;
+      gpu_s_per_second: Record<Resolution, number>;
+      /** Personnes remplaçables par rendu : un passage GPU chacune. */
+      max_people: number;
+    };
   };
   example_url: string;
   youtube_max_duration_s: number;
@@ -165,6 +200,17 @@ export type ZeroGPUSettings = {
   character_space: string | null;
   character_configured: boolean;
   character_tested: boolean;
+};
+export type SpaceKind = "faces" | "character";
+/** État d'un Space lu chez Hugging Face (sans quota) ; waking_since = début du réveil (secondes epoch). */
+export type SpaceState = {
+  space: string | null;
+  phase: "ready" | "starting" | "asleep" | "error" | "unknown" | "unconfigured";
+  stage: string | null;
+  hardware: string | null;
+  error: string | null;
+  waking_since: number | null;
+  expected_s: number;
 };
 export type ZeroGPUTest = { ok: boolean; latency_ms: number; version: string; levels: Level[]; zerogpu: boolean };
 
@@ -241,6 +287,10 @@ export const api = {
 
   scan: (id: string, start: number, end: number) =>
     request<PassageScan>("GET", `/api/videos/${id}/scan?start=${start.toFixed(2)}&end=${end.toFixed(2)}`),
+  /** Visage d'une zone tracée à la main. face = null : déjà dans la liste, à la place index. */
+  addScanFace: (id: string, body: { start: number; end: number; t: number; box: Box }) =>
+    request<{ index: number; face: ScanFace | null }>("POST", `/api/videos/${id}/scan/faces`, body),
+  deleteScanFace: (id: string, faceId: string) => request<{ ok: boolean }>("DELETE", `/api/videos/${id}/scan/faces/${faceId}`),
 
   // Session de la vidéo (personnes choisies pour ce rendu)
   createFaceSet: (files: File[] = []) => {
@@ -267,6 +317,8 @@ export const api = {
   deletePerson: (pid: string) => request<{ ok: boolean }>("DELETE", `/api/people/${pid}`),
   movePhoto: (pid: string, photoId: string, person: string | "new") =>
     request<{ moved_to: string; source_exists: boolean }>("PATCH", `/api/people/${pid}/photos/${photoId}`, { person }),
+  framing: (pid: string) => request<PersonFraming>("GET", `/api/people/${pid}/framing`),
+  setReference: (pid: string, photoId: string | null) => request<PersonFraming>("PUT", `/api/people/${pid}/reference`, { photo_id: photoId }),
   deletePhoto: (pid: string, photoId: string) =>
     request<{ ok: boolean; person_exists: boolean }>("DELETE", `/api/people/${pid}/photos/${photoId}`),
   importToLibrary: (files: File[]) => {
@@ -285,6 +337,8 @@ export const api = {
   saveZeroGPU: (body: { space: string; token?: string; key?: string; character_space?: string }) =>
     request<{ zerogpu: ZeroGPUSettings }>("PUT", "/api/settings/zerogpu", body),
   clearZeroGPU: () => request<{ zerogpu: ZeroGPUSettings }>("DELETE", "/api/settings/zerogpu"),
+  spaceState: (kind: SpaceKind) => request<SpaceState>("GET", `/api/settings/zerogpu/state?kind=${kind}`),
+  wakeSpace: (kind: SpaceKind) => request<SpaceState>("POST", `/api/settings/zerogpu/wake?kind=${kind}`),
   testZeroGPU: (kind: "faces" | "character" = "faces") =>
     request<ZeroGPUTest>("POST", `/api/settings/zerogpu/test${kind === "character" ? "?kind=character" : ""}`),
 

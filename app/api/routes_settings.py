@@ -73,6 +73,24 @@ def clear_zerogpu() -> dict:
     return {"zerogpu": public()}
 
 
+@router.get("/zerogpu/state")
+def space_state(kind: str = "faces") -> dict:
+    """État en direct du Space (endormi, démarrage + chrono, prêt, erreur) : métadonnées Hugging Face, sans quota."""
+    try:
+        return zg.state(kind)
+    except zg.ZeroGPUError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@router.post("/zerogpu/wake")
+def wake_space(kind: str = "faces") -> dict:
+    """Réveille le Space en avance (ou le redémarre s'il a planté). Sans quota : le GPU n'est pris qu'au calcul."""
+    try:
+        return zg.wake(kind)
+    except zg.ZeroGPUError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
 @router.post("/zerogpu/test")
 def test_zerogpu(kind: str = "faces") -> dict:
     """Vérifie que le Space (niveaux 1-2, ou niveau 4 avec kind=character) répond et accepte la clé, sans quota GPU."""

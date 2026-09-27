@@ -264,6 +264,8 @@ def move_photo(pid: str, photo_id: str, target: str) -> str:
         for f in src_dir.glob(f"{photo_id}*"):
             shutil.move(str(f), dst_dir / f.name)
         source["photos"] = [ph for ph in source["photos"] if ph["id"] != photo_id]
+        if source.get("reference_photo") == photo_id:   # photo de référence du niveau 4 partie ailleurs
+            source["reference_photo"] = None
         dest["photos"].append(photo)
         _save(dest)
         if source["photos"]:
@@ -278,6 +280,8 @@ def delete_photo(pid: str, photo_id: str) -> bool:
     with _lock:
         person = load(pid)
         person["photos"] = [ph for ph in person["photos"] if ph["id"] != photo_id]
+        if person.get("reference_photo") == photo_id:
+            person["reference_photo"] = None
         for f in _dir(pid).glob(f"{photo_id}*"):
             f.unlink(missing_ok=True)
         if not person["photos"]:
@@ -288,16 +292,21 @@ def delete_photo(pid: str, photo_id: str) -> bool:
 
 
 def photo_file(pid: str, photo_id: str, kind: str) -> Path | None:
-    if not photo_id.isalnum() or kind not in ("crop", "photo"):
+    """crop : visage recadré (vignettes) ; photo : photo entière 480 px ; full : photo entière 1024 px."""
+    if not photo_id.isalnum() or kind not in ("crop", "photo", "full"):
         return None
-    path = _dir(pid) / (f"{photo_id}_crop.jpg" if kind == "crop" else f"{photo_id}.jpg")
+    name = {"crop": f"{photo_id}_crop.jpg", "photo": f"{photo_id}.jpg", "full": f"{photo_id}_full.jpg"}[kind]
+    path = _dir(pid) / name
+    if kind == "full" and not path.is_file():   # photos importées avant la version 1024 px
+        path = _dir(pid) / f"{photo_id}.jpg"
     return path if path.is_file() else None
 
 
 def public(person: dict) -> dict:
     base = f"/api/people/{person['id']}/photos"
     photos = [{"id": ph["id"], "name": ph["name"], "crop_url": f"{base}/{ph['id']}/crop.jpg",
-               "photo_url": f"{base}/{ph['id']}/photo.jpg"} for ph in person["photos"]]
+               "photo_url": f"{base}/{ph['id']}/photo.jpg", "full_url": f"{base}/{ph['id']}/full.jpg"}
+              for ph in person["photos"]]
     return {"id": person["id"], "name": person["name"], "count": len(photos),
             "cover_url": photos[0]["crop_url"] if photos else None, "photos": photos,
             "created_at": person.get("created_at"), "updated_at": person.get("updated_at")}
@@ -313,6 +322,55 @@ def photo_paths(pid: str) -> list[Path]:
     return out
 
 
+def _manual_reference(person: dict) -> str | None:
+    ref = person.get("reference_photo")
+    return ref if ref and any(ph["id"] == ref for ph in person["photos"]) else None
+
+
+def set_reference(pid: str, photo_id: str | None) -> dict:
+    """Impose la photo du niveau 4 (None : retour au choix automatique, la plus en pied)."""
+    with _lock:
+        person = load(pid)
+        if photo_id is not None and all(ph["id"] != photo_id for ph in person["photos"]):
+            raise PersonNotFound(photo_id)
+        person["reference_photo"] = photo_id
+        _save(person)
+    return framing(pid)
+
+
+def framing(pid: str) -> dict:
+    """Cadrage de chaque photo pour le niveau 4 : part de la hauteur occupée par le visage (petit = photo en pied).
+
+    Calculé une fois par photo puis gardé dans la fiche ; « reference » = la photo que le niveau 4 utilisera
+    (même choix que le worker : la plus en pied).
+    """
+    from src.character import face_ratio, framing_of
+
+    person = load(pid)
+    d = _dir(pid)
+    changed = False
+    for ph in person["photos"]:
+        if "face_ratio" not in ph:
+            full = d / f"{ph['id']}_full.jpg"
+            ph["face_ratio"] = face_ratio(full if full.is_file() else d / f"{ph['id']}.jpg")
+            changed = True
+    if changed:
+        with _lock:
+            fresh = load(pid)            # une photo a pu être ajoutée ou retirée entre-temps
+            ratios = {ph["id"]: ph["face_ratio"] for ph in person["photos"]}
+            for ph in fresh["photos"]:
+                if ph["id"] in ratios and "face_ratio" not in ph:
+                    ph["face_ratio"] = ratios[ph["id"]]
+            # Simple cache : ni la date « modifiée le » ni l'ordre de la bibliothèque ne changent.
+            (d / "person.json").write_text(json.dumps(fresh, ensure_ascii=False), encoding="utf-8")
+    scored = [ph for ph in person["photos"] if ph.get("face_ratio") is not None]
+    auto = min(scored, key=lambda ph: ph["face_ratio"])["id"] if scored else None
+    manual = _manual_reference(person)
+    return {"reference": manual or auto, "auto_reference": auto, "manual": manual is not None,
+            "photos": {ph["id"]: {"face_ratio": ph.get("face_ratio"), "framing": framing_of(ph.get("face_ratio"))}
+                       for ph in person["photos"]}}
+
+
 def assets(pid: str, level: str) -> PersonAssets:
     """Tout ce dont un niveau a besoin pour cette personne. Le teint est mis en cache (recalculé si les photos changent)."""
     if not exists(pid):
@@ -322,6 +380,10 @@ def assets(pid: str, level: str) -> PersonAssets:
     if not embs:
         raise RuntimeError(f"{person['name']} n'a plus de photo utilisable.")
     out = PersonAssets(source=SourceFace(average_embedding(embs)), photos=photo_paths(pid))
+    ref = _manual_reference(person)
+    if ref:   # photo choisie à la main pour le niveau 4
+        full = _dir(pid) / f"{ref}_full.jpg"
+        out.reference = full if full.is_file() else _dir(pid) / f"{ref}.jpg"
     if level in (FACE_TONE,):
         from src.assets import person_tone
         from src.tone import ToneStats

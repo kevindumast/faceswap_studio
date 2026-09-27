@@ -15,17 +15,32 @@ import numpy as np
 
 from src import media
 
-PORTRAIT_RATIO = 0.22   # visage plus haut que 22 % de la photo : portrait, le corps et les habits seront inventés
+# Cadrage d'une photo selon la part de sa hauteur occupée par le visage.
+FULL_BODY_RATIO = 0.14   # jusqu'ici : de la tête aux pieds (idéal pour le niveau 4)
+PORTRAIT_RATIO = 0.30    # au-delà : portrait, le corps et les habits seront inventés ; entre les deux : mi-corps
+
+
+def framing_of(ratio: float | None) -> str:
+    """full (tête aux pieds), half (mi-corps : le bas sera inventé), portrait, ou none (visage introuvable)."""
+    if ratio is None:
+        return "none"
+    if ratio <= FULL_BODY_RATIO:
+        return "full"
+    return "half" if ratio <= PORTRAIT_RATIO else "portrait"
 
 
 @dataclass
 class Reference:
     path: Path
-    face_ratio: float     # hauteur du visage / hauteur de la photo (petit = photo en pied)
+    face_ratio: float | None    # hauteur du visage / hauteur de la photo (petit = photo en pied ; None : introuvable)
+
+    @property
+    def framing(self) -> str:
+        return framing_of(self.face_ratio)
 
     @property
     def full_body(self) -> bool:
-        return self.face_ratio <= PORTRAIT_RATIO
+        return self.framing == "full"
 
 
 def face_ratio(path: Path) -> float | None:
