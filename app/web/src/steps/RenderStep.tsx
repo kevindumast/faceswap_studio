@@ -5,7 +5,7 @@ import { useState } from "react";
 import { ApiError, api, type Job, type JobParams, type Level, type Mapping, type Status, type Video } from "../lib/api";
 import { levelInfo } from "../lib/levels";
 import { faceIndex, styleOf } from "../lib/people";
-import { duration, seconds, timecode } from "../lib/time";
+import { cappedFps, duration, seconds, timecode } from "../lib/time";
 import { Button, Card, Notice, ProgressBar, SectionTitle, SegmentedControl, Switch, cx } from "../components/ui";
 import { Compare } from "../components/Compare";
 import type { Selection } from "../components/trimmer/Trimmer";
@@ -83,8 +83,13 @@ function Setup(p: Props) {
   const [useGpu, setUseGpu] = useState(false);
   const info = levelInfo(p.level);
   const fps = p.video.info!.fps;
+  const cap = p.status?.fps_cap ?? 30;
+  const highFps = fps > cap + 0.5;
+  // Coché par défaut pour les vidéos > 30 i/s : cadence standard des réseaux sociaux, rendu 2× plus rapide en 60 i/s.
+  const [limitFps, setLimitFps] = useState(true);
+  const renderFps = highFps && limitFps ? cappedFps(fps, cap) : fps;
   const len = p.selection.end - p.selection.start;
-  const frames = Math.round(len * fps);
+  const frames = Math.round(len * renderFps);
   const active = p.mappings.filter((m): m is Mapping & { person: string } => !!m.person);
   // Le swap domine le temps de calcul : chaque visage remplacé en plus coûte ~75 % d'une passe.
   const swapFactor = 1 + 0.75 * Math.max(0, active.length - 1);
@@ -116,6 +121,7 @@ function Setup(p: Props) {
         mappings: active.map(({ t, box, person }) => ({ t, box, person })),
         level: p.level,
         use_gpu: useGpu,
+        limit_fps: highFps && limitFps,
         consent: p.consent,
       }),
     onSuccess: (j) => {
@@ -203,6 +209,14 @@ function Setup(p: Props) {
           <div className="space-y-3 border-t border-line pt-4">
             <Switch checked={stabilize} onChange={setStabilize} label="Stabilisation" description="Lisse les tremblements du visage d'une image à l'autre." />
             <Switch checked={aiLabel} onChange={setAiLabel} label="Étiquette « Contenu modifié par IA »" description="Petite mention en bas à droite, recommandée pour publier." />
+            {highFps && (
+              <Switch
+                checked={limitFps}
+                onChange={setLimitFps}
+                label={`Limiter à ${Math.round(cappedFps(fps, cap))} i/s`}
+                description={`Vidéo en ${Math.round(fps)} i/s : une image sur ${Math.round(fps / cappedFps(fps, cap))} est gardée, rendu ${Math.round(fps / cappedFps(fps, cap))}× plus rapide. Standard TikTok / Reels ; décoché : cadence d'origine.`}
+              />
+            )}
             {!aiLabel && info.step >= 2 && (
               <Notice tone="warn">Plus le rendu est réaliste, plus l'étiquette compte : sans elle, la vidéo peut passer pour vraie une fois partagée.</Notice>
             )}

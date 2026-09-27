@@ -76,6 +76,8 @@ render:
   similarity_threshold: 0.28   # similarité cosinus minimale avec le visage cible
   smoothing: 0.6               # EMA des landmarks (0 = aucun lissage, 0.9 = très lissé)
   preview_every: 8             # frames entre deux aperçus live
+  fps_cap: 30                  # option « Limiter à 30 i/s » : cadence max (atteinte en gardant une image sur N)
+  duplicate_block_diff: 4.0    # écart max par bloc sous lequel une image est une copie de la précédente (0 = désactivé)
   default_sec_per_frame: 2.2   # estimation CPU avant le premier job mesuré (i7 4 cœurs ≈ 2,2 s)
 
 proxy:

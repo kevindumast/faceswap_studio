@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import shutil
+from fractions import Fraction
 import time
 from typing import Literal
 
@@ -11,6 +12,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app import db
+from src import media
 from src.config import load_config
 
 from src.levels import CHARACTER, FACE, FACE_TONE, models_ready
@@ -20,6 +22,14 @@ from .routes_faces import person_ids
 
 # Niveaux livrés à ce stade (phase A) ; le niveau 3 et le niveau 4 arrivent dans les phases suivantes.
 AVAILABLE_LEVELS = (FACE, FACE_TONE)
+
+
+def output_fps(info: dict, limit: bool) -> float:
+    """Cadence du rendu : celle de la vidéo, ou plafonnée (une image sur N) si l'option est cochée."""
+    fps_str = info.get("fps_str") or str(info["fps"])
+    if limit:
+        fps_str = media.capped_fps(fps_str, float(load_config().render.get("fps_cap", 30)))
+    return float(Fraction(fps_str))
 
 
 def gpu_configured() -> bool:
@@ -52,6 +62,7 @@ class JobIn(BaseModel):
     level: Literal["face", "face_tone", "head", "character"] = "face"
     use_gpu: bool = False         # jamais implicite : CPU sauf case cochée par l'utilisateur
     resolution: Literal["360p", "480p"] = "360p"  # niveau 4 uniquement
+    limit_fps: bool = False       # vidéos > render.fps_cap i/s : une image sur N (60 → 30)
     consent: bool = False
 
 
@@ -141,7 +152,7 @@ def create_job(body: JobIn) -> dict:
     job_id = db.new_id()
     params = body.model_dump(exclude={"video_id", "face_set_id", "consent"})
     db.insert("jobs", id=job_id, video_id=body.video_id, face_set_id=body.face_set_id, params=params,
-              status="queued", total=round(length * video["info"]["fps"]), created_at=time.time())
+              status="queued", total=round(length * output_fps(video["info"], body.limit_fps)), created_at=time.time())
     return public(db.get("jobs", job_id))
 
 

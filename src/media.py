@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -161,10 +162,24 @@ def extract_frame(src: Path, t: float, max_height: int | None = None) -> np.ndar
     return frame
 
 
-def cut_segment(src: Path, dst: Path, start: float, end: float, size: tuple[int, int], has_audio: bool) -> None:
-    """Découpe précise à la frame (seek d'entrée + réencodage), à la taille de travail."""
+def capped_fps(fps_str: str, cap: float | None) -> str:
+    """Cadence de sortie ≤ cap, obtenue en divisant la cadence d'origine par un entier (60 → 30, 59,94 → 29,97, 50 → 25).
+
+    Diviser par un entier garde une image sur N, régulièrement : aucune saccade, contrairement à un 60 → 30 « approché ».
+    """
+    frac = Fraction(fps_str)
+    if not cap or frac <= Fraction(cap).limit_denominator(1000):
+        return fps_str
+    out = frac / math.ceil(frac / Fraction(cap).limit_denominator(1000))
+    return f"{out.numerator}/{out.denominator}"
+
+
+def cut_segment(src: Path, dst: Path, start: float, end: float, size: tuple[int, int], has_audio: bool,
+                fps_str: str | None = None) -> None:
+    """Découpe précise à la frame (seek d'entrée + réencodage), à la taille de travail (et à fps_str si donné)."""
     w, h = size
-    args = ["-ss", f"{start:.3f}", "-i", str(src), "-t", f"{end - start:.3f}", "-vf", f"scale={w}:{h},setsar=1",
+    vf = f"scale={w}:{h},setsar=1" + (f",fps={fps_str}" if fps_str else "")
+    args = ["-ss", f"{start:.3f}", "-i", str(src), "-t", f"{end - start:.3f}", "-vf", vf,
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p"]
     args += ["-c:a", "aac", "-b:a", "192k"] if has_audio else ["-an"]
     ffmpeg(*args, str(dst))
@@ -251,15 +266,16 @@ def assemble_segment(swapped: Path, cut: Path, dst: Path, has_audio: bool, label
 
 
 def assemble_full(source: Path, swapped: Path, dst: Path, info: VideoInfo, size: tuple[int, int], start: float,
-                  end: float, label: Path | None, crf: int, preset: str) -> None:
-    """Sortie « vidéo complète » : avant + extrait swappé + après, audio d'origine complet."""
+                  end: float, label: Path | None, crf: int, preset: str, fps_str: str | None = None) -> None:
+    """Sortie « vidéo complète » : avant + extrait swappé + après, audio d'origine complet (à fps_str si donné)."""
     w, h = size
+    fps_out = fps_str or info.fps_str
     frame = 1 / info.fps
     parts, chains = [], []
     has_pre = start > frame
     has_post = end < info.duration - frame
     splits = int(has_pre) + int(has_post)
-    base = f"[0:v]scale={w}:{h},setsar=1,fps={info.fps_str}"
+    base = f"[0:v]scale={w}:{h},setsar=1,fps={fps_out}"
     if splits == 2:
         chains.append(f"{base},split=2[s0][s1]")
         pre_in, post_in = "[s0]", "[s1]"
@@ -269,7 +285,7 @@ def assemble_full(source: Path, swapped: Path, dst: Path, info: VideoInfo, size:
     if has_pre:
         chains.append(f"{pre_in}trim=end={start:.4f},setpts=PTS-STARTPTS[pre]")
         parts.append("[pre]")
-    chains.append(f"[1:v]scale={w}:{h},setsar=1,fps={info.fps_str},setpts=PTS-STARTPTS[mid]")
+    chains.append(f"[1:v]scale={w}:{h},setsar=1,fps={fps_out},setpts=PTS-STARTPTS[mid]")
     parts.append("[mid]")
     if has_post:
         chains.append(f"{post_in}trim=start={end:.4f},setpts=PTS-STARTPTS[post]")

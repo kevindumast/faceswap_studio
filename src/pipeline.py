@@ -42,6 +42,7 @@ class RenderOptions:
     stabilize: bool = True
     ai_label: bool = True
     level: str = FACE
+    limit_fps: bool = False            # vidéos > render.fps_cap : une image sur N (60 → 30 i/s)
 
 
 @dataclass
@@ -57,6 +58,7 @@ class CutSegment:
     path: Path
     info: media.VideoInfo              # infos de la vidéo source
     size: tuple[int, int]              # taille de travail (source réduite à render.max_height)
+    fps_str: str                       # cadence de sortie (celle de la source, ou plafonnée)
 
 
 @dataclass
@@ -65,6 +67,8 @@ class RenderStats:
     swapped: int = 0
     seconds: float = 0.0
     sec_per_frame: float = 0.0
+    reused: int = 0                    # images identiques à la précédente : résultat réutilisé, pas recalculé
+    sec_per_computed: float = 0.0      # temps par image réellement calculée (sert à l'estimation des prochains rendus)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -79,13 +83,16 @@ def validate_range(start: float, end: float, duration: float) -> None:
 
 def cut(source: Path, opts: RenderOptions, work_dir: Path) -> CutSegment:
     """Découpe précise du passage, à la taille de travail, avec le son d'origine."""
+    rcfg = load_config().render
     info = media.probe(source)
     validate_range(opts.start, opts.end, info.duration)
-    size = media.scaled_size(info, int(load_config().render.max_height))
+    size = media.scaled_size(info, int(rcfg.max_height))
+    fps_str = media.capped_fps(info.fps_str, float(rcfg.get("fps_cap", 30))) if opts.limit_fps else info.fps_str
     work_dir.mkdir(parents=True, exist_ok=True)
     path = work_dir / "cut.mp4"
-    media.cut_segment(source, path, opts.start, opts.end, size, info.has_audio)
-    return CutSegment(path, info, size)
+    media.cut_segment(source, path, opts.start, opts.end, size, info.has_audio,
+                      fps_str if fps_str != info.fps_str else None)
+    return CutSegment(path, info, size, fps_str)
 
 
 def relative_targets(mappings: list[FaceMapping], start: float, length: float) -> list[FaceMapping]:
@@ -112,6 +119,26 @@ def _reference_from_target(clip: Path, target: dict, size: tuple[int, int], cach
     box = [x1 * w, y1 * h, x2 * w, y2 * h]
     best = max(faces, key=lambda f: iou(f.bbox, box))
     return best.normed_embedding if iou(best.bbox, box) > 0.2 else None
+
+
+class DuplicateDetector:
+    """Repère les images identiques à la précédente (vidéos converties en 50/60 i/s en dupliquant des images).
+
+    Comparaison zone par zone (blocs de 10×10 px sur une vignette 320×180) : une moyenne sur toute l'image masquerait
+    un petit mouvement de lèvres dans un plan fixe. Mesuré : copies ≤ 2,4 d'écart max par bloc, vraies images ≥ 7,5.
+    """
+
+    def __init__(self, threshold: float):
+        self.threshold = threshold
+        self.prev: np.ndarray | None = None
+
+    def is_duplicate(self, frame: np.ndarray) -> bool:
+        small = cv2.cvtColor(cv2.resize(frame, (320, 180), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY).astype(np.float32)
+        prev, self.prev = self.prev, small
+        if prev is None or self.threshold <= 0:
+            return False
+        blocks = np.abs(small - prev).reshape(18, 10, 32, 10).mean(axis=(1, 3))
+        return float(blocks.max()) < self.threshold
 
 
 def swap_segment(clip: Path, mappings: list[FaceMapping], level: str, out: Path, *, stabilize: bool = True,
@@ -150,6 +177,8 @@ def swap_segment(clip: Path, mappings: list[FaceMapping], level: str, out: Path,
     cap = cv2.VideoCapture(str(clip))
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or round(info.duration * info.fps)
     every = int(rcfg.preview_every)
+    duplicates = DuplicateDetector(float(rcfg.get("duplicate_block_diff", 4.0)))
+    last_out: np.ndarray | None = None
     try:
         with media.FrameWriter(out, size, info.fps_str, int(rcfg.crf), str(rcfg.preset)) as writer:
             i = 0
@@ -157,6 +186,15 @@ def swap_segment(clip: Path, mappings: list[FaceMapping], level: str, out: Path,
                 ok, frame = cap.read()
                 if not ok:
                     break
+                if last_out is not None and duplicates.is_duplicate(frame):
+                    # Copie de l'image précédente : même résultat, sans refaire détection ni swap.
+                    writer.write(last_out)
+                    stats.reused += 1
+                    i += 1
+                    report("swap", i, max(total, i))
+                    continue
+                if last_out is None:
+                    duplicates.is_duplicate(frame)  # mémorise la première image
                 faces = detect_boxes(frame)
 
                 def embed_once(f, frame=frame):
@@ -184,6 +222,7 @@ def swap_segment(clip: Path, mappings: list[FaceMapping], level: str, out: Path,
                 if picks:
                     stats.swapped += 1
                 writer.write(frame)
+                last_out = frame
                 i += 1
                 if preview is not None and (i == 1 or i % every == 0):
                     small = cv2.resize(frame, (int(frame.shape[1] * 480 / frame.shape[0]) // 2 * 2, 480))
@@ -199,9 +238,10 @@ def swap_segment(clip: Path, mappings: list[FaceMapping], level: str, out: Path,
         raise RenderError("Aucune frame lue dans l'extrait.")
     if stats.swapped == 0:
         raise RenderError("Aucun visage cible détecté dans ce passage.")
+    computed = stats.frames - stats.reused
     for mapping, _, _, count in active:
-        if count < stats.frames * 0.5:
-            stats.warnings.append(f"{mapping.label} remplacé sur {count}/{stats.frames} images seulement (profils, occlusions).")
+        if count < computed * 0.5:
+            stats.warnings.append(f"{mapping.label} remplacé sur {count}/{computed} images seulement (profils, occlusions).")
     return stats
 
 
@@ -211,7 +251,8 @@ def assemble(source: Path, segment: CutSegment, swapped: Path, opts: RenderOptio
     label = media.render_label(work_dir / "label.png", segment.size[1]) if opts.ai_label else None
     crf, preset = int(rcfg.crf), str(rcfg.preset)
     if opts.output == "full":
-        media.assemble_full(source, swapped, out, segment.info, segment.size, opts.start, opts.end, label, crf, preset)
+        media.assemble_full(source, swapped, out, segment.info, segment.size, opts.start, opts.end, label, crf, preset,
+                            segment.fps_str)
     else:
         media.assemble_segment(swapped, segment.path, out, segment.info.has_audio, label, crf, preset)
 
@@ -231,7 +272,9 @@ def render(source: Path, mappings: list[FaceMapping], opts: RenderOptions, work_
     local = relative_targets(mappings, opts.start, opts.end - opts.start)
     swap_segment(segment.path, local, opts.level, swapped, stabilize=opts.stabilize, progress=report,
                  preview=preview, stats=stats)
-    stats.sec_per_frame = (time.perf_counter() - t0) / stats.frames
+    elapsed = time.perf_counter() - t0
+    stats.sec_per_frame = elapsed / stats.frames
+    stats.sec_per_computed = elapsed / max(1, stats.frames - stats.reused)
 
     report("assemble", 0, 1)
     assemble(source, segment, swapped, opts, out, work_dir)
@@ -251,6 +294,7 @@ def main() -> None:
     ap.add_argument("--full", action="store_true", help="réinsérer le passage dans la vidéo complète")
     ap.add_argument("--no-label", action="store_true")
     ap.add_argument("--no-stabilize", action="store_true")
+    ap.add_argument("--limit-fps", action="store_true", help="plafonner à render.fps_cap i/s (une image sur N)")
     args = ap.parse_args()
 
     person = PersonAssets(source=source_from_dir(args.faces))
@@ -259,13 +303,15 @@ def main() -> None:
 
         person.tone = person_tone(sorted(p for p in args.faces.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}))
     opts = RenderOptions(args.start, args.end, "full" if args.full else "segment",
-                         stabilize=not args.no_stabilize, ai_label=not args.no_label, level=args.level)
+                         stabilize=not args.no_stabilize, ai_label=not args.no_label, level=args.level,
+                         limit_fps=args.limit_fps)
 
     def show(stage: str, done: int, total: int) -> None:
         print(f"\r{stage:<9} {done}/{total}", end="", flush=True)
 
     stats = render(args.video, [FaceMapping(person)], opts, args.out.parent / f".{args.out.stem}_work", args.out, show)
-    print(f"\nOK : {args.out}  ({stats.swapped}/{stats.frames} frames, {stats.sec_per_frame:.2f} s/frame)")
+    print(f"\nOK : {args.out}  ({stats.swapped}/{stats.frames} frames, {stats.reused} copies réutilisées, "
+          f"{stats.sec_per_frame:.2f} s/frame, {stats.seconds:.0f} s au total)")
     for w in stats.warnings:
         print("! " + w)
 

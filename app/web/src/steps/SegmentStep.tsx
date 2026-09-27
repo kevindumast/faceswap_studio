@@ -1,6 +1,6 @@
 import { ArrowRight, Cpu } from "lucide-react";
 import type { Status, Video } from "../lib/api";
-import { duration } from "../lib/time";
+import { cappedFps, duration } from "../lib/time";
 import { Button, SectionTitle } from "../components/ui";
 import { Trimmer, type Selection } from "../components/trimmer/Trimmer";
 
@@ -15,7 +15,8 @@ type Props = {
 export function SegmentStep({ video, status, selection, onChange, onNext }: Props) {
   const min = status?.segment.min_s ?? 5;
   const max = status?.segment.max_s ?? 60;
-  const fps = video.info!.fps;
+  // Même hypothèse que l'option cochée par défaut à l'étape Rendu : 30 i/s max.
+  const fps = cappedFps(video.info!.fps, status?.fps_cap ?? 30);
   const frames = Math.round((selection.end - selection.start) * fps);
   const estimate = frames * (status?.sec_per_frame ?? 2.2) + 15;
 

@@ -62,6 +62,7 @@ def status() -> dict:
         "worker": time.time() - heartbeat < 10,
         "segment": {"min_s": cfg.segment.min_s, "max_s": cfg.segment.max_s},
         "photos_max": cfg.photos.max,
+        "fps_cap": float(cfg.render.get("fps_cap", 30)),
         "upload_max_mb": cfg.upload.max_mb,
         "video_ext": cfg.upload.video_ext,
         "sec_per_frame": routes_models.sec_per_frame(FACE),

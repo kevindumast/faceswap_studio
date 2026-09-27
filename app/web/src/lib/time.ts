@@ -34,6 +34,11 @@ export function duration(t: number): string {
   return s ? `${m} min ${String(s).padStart(2, "0")}` : `${m} min`;
 }
 
+/** Cadence du rendu plafonnée en gardant une image sur N (60 → 30, 59,94 → 29,97, 50 → 25), comme le serveur. */
+export function cappedFps(fps: number, cap: number): number {
+  return fps <= cap + 0.01 ? fps : fps / Math.ceil(fps / cap - 1e-6);
+}
+
 export function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
 }

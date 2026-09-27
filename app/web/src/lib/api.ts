@@ -91,6 +91,7 @@ export type JobParams = {
   level: Level;
   use_gpu: boolean;
   resolution?: "360p" | "480p";
+  limit_fps?: boolean;
 };
 
 export type Job = {
@@ -125,6 +126,7 @@ export type Status = {
   worker: boolean;
   segment: { min_s: number; max_s: number };
   photos_max: number;
+  fps_cap: number;
   upload_max_mb: number;
   video_ext: string[];
   sec_per_frame: number;

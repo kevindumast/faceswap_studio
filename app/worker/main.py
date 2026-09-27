@@ -26,7 +26,8 @@ def run_job(job: dict) -> None:
     params = job["params"]
     level = params.get("level") or FACE
     opts = RenderOptions(start=params["start"], end=params["end"], output=params["output"],
-                         stabilize=params["stabilize"], ai_label=params["ai_label"], level=level)
+                         stabilize=params["stabilize"], ai_label=params["ai_label"], level=level,
+                         limit_fps=bool(params.get("limit_fps", False)))
     set_id = job["face_set_id"]
     if params.get("mappings"):
         # Données préparées une seule fois par personne, même si elle remplace plusieurs visages.
@@ -62,7 +63,8 @@ def run_job(job: dict) -> None:
     # Vitesse ramenée à un seul visage et mémorisée par (niveau, moteur), pour que les estimations restent justes
     # (même formule que le frontend : chaque visage en plus ≈ +75 %).
     factor = 1 + 0.75 * max(0, len(mappings) - 1)
-    db.set_meta(f"spf:{level}:{accelerator()}", str(stats.sec_per_frame / factor))
+    # Par image réellement calculée : les copies sautées ne doivent pas rendre les estimations trop optimistes.
+    db.set_meta(f"spf:{level}:{accelerator()}", str(stats.sec_per_computed / factor))
     db.update("jobs", job_id, status="done", finished_at=time.time(), sec_per_frame=stats.sec_per_frame,
               warnings=stats.warnings, done=stats.frames, total=stats.frames)
 
