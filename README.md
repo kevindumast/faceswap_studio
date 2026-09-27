@@ -1,6 +1,6 @@
 # Faceswap Studio
 
-Appli locale de face swap vidéo (usage perso / parodie, étiquetée IA) : vidéo YouTube ou fichier → choix d'un passage de 5 à 30 s → photos du visage source → rendu.
+Appli locale de face swap vidéo (usage perso / parodie, étiquetée IA) : vidéo YouTube ou fichier → choix d'un passage de 5 à 60 s → photos du visage source → rendu.
 
 > Modèles InsightFace (`inswapper_128`, `buffalo_l`) : **usage non commercial uniquement**. L'API n'écoute que sur `127.0.0.1`.
 

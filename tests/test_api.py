@@ -54,7 +54,7 @@ def _job(client, video, face_set, start, end, mappings):
 
 def test_status(client):
     s = client.get("/api/status").json()
-    assert s["segment"] == {"min_s": 5, "max_s": 30}
+    assert s["segment"] == {"min_s": 5, "max_s": 60}
 
 
 def test_segment_bounds(client, ready_video):

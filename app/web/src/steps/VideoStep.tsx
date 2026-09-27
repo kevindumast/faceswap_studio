@@ -45,7 +45,7 @@ export function VideoStep({ status, onReady }: Props) {
       <SectionTitle
         eyebrow="Étape 1 · Vidéo"
         title="D'où vient la vidéo ?"
-        subtitle="Colle un lien YouTube ou importe un fichier. Tu choisiras le passage de 5 à 30 s juste après."
+        subtitle={`Colle un lien YouTube ou importe un fichier. Tu choisiras le passage de ${status?.segment.min_s ?? 5} à ${status?.segment.max_s ?? 60} s juste après.`}
       />
 
       <AnimatePresence mode="wait">

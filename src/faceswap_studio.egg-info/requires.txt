@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pyyaml
+yt-dlp
+insightface
+onnxruntime
+onnx
+opencv-python-headless
+numpy
+
+[dev]
+pytest
+httpx

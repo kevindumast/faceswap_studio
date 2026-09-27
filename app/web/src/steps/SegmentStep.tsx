@@ -14,7 +14,7 @@ type Props = {
 
 export function SegmentStep({ video, status, selection, onChange, onNext }: Props) {
   const min = status?.segment.min_s ?? 5;
-  const max = status?.segment.max_s ?? 30;
+  const max = status?.segment.max_s ?? 60;
   const fps = video.info!.fps;
   const frames = Math.round((selection.end - selection.start) * fps);
   const estimate = frames * (status?.sec_per_frame ?? 2.2) + 15;
