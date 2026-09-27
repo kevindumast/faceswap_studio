@@ -65,7 +65,11 @@ def main() -> None:
 
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.space):
         sys.exit("--space doit être de la forme ton-pseudo/nom-du-space")
-    token = args.token or os.environ.get("HF_TOKEN") or getpass.getpass("Jeton Hugging Face (write) : ").strip()
+    db.init()
+    saved = db.get_meta("zerogpu_token")   # jeton déjà enregistré par un précédent --save : pas besoin de le recoller
+    if saved and not (args.token or os.environ.get("HF_TOKEN")):
+        print("Jeton Hugging Face : celui enregistré dans l'appli.")
+    token = args.token or os.environ.get("HF_TOKEN") or saved or getpass.getpass("Jeton Hugging Face (write) : ").strip()
     if not token:
         sys.exit("Jeton requis : https://huggingface.co/settings/tokens")
 
@@ -76,7 +80,6 @@ def main() -> None:
     user = api.whoami()["name"]
     print(f"Compte Hugging Face : {user}")
 
-    db.init()
     key = db.get_meta("zerogpu_key") or secrets.token_urlsafe(24)   # même clé pour tes deux Spaces
 
     print(f"Space {args.space} (privé, ZeroGPU)…")
