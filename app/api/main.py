@@ -15,7 +15,7 @@ from src.config import ROOT, load_config
 from src.hardware import engine_status
 from src.levels import FACE
 
-from . import routes_faces, routes_jobs, routes_models, routes_videos
+from . import routes_faces, routes_jobs, routes_models, routes_people, routes_videos
 
 WEB_DIST = ROOT / "app" / "web" / "dist"
 
@@ -40,6 +40,7 @@ app.include_router(routes_videos.router)
 app.include_router(routes_faces.router)
 app.include_router(routes_jobs.router)
 app.include_router(routes_models.router)
+app.include_router(routes_people.router)
 
 
 @app.get("/api/status")

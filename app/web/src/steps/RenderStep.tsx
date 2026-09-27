@@ -4,7 +4,7 @@ import { ArrowLeft, ArrowRight, Check, Clapperboard, Cpu, Download, Film, Loader
 import { useState } from "react";
 import { ApiError, api, type Job, type JobParams, type Level, type Mapping, type Status, type Video } from "../lib/api";
 import { levelInfo } from "../lib/levels";
-import { personColor, sameBox } from "../lib/people";
+import { faceIndex, styleOf } from "../lib/people";
 import { duration, seconds, timecode } from "../lib/time";
 import { Button, Card, Notice, ProgressBar, SectionTitle, SegmentedControl, Switch, cx } from "../components/ui";
 import { Compare } from "../components/Compare";
@@ -95,14 +95,13 @@ function Setup(p: Props) {
   const fullExtra = p.video.info!.duration * 0.25;
   const estimate = frames * spf * swapFactor + 15 + (output === "full" ? fullExtra : 0);
   const faceSet = useQuery({ queryKey: ["faceset", p.faceSetId], queryFn: () => api.faceSet(p.faceSetId) });
-  const t0 = active[0]?.t;
-  const targetFaces = useQuery({
-    queryKey: ["faces", p.video.id, t0],
-    queryFn: () => api.facesAt(p.video.id, t0!),
-    enabled: t0 !== undefined,
+  // Même requête que l'étape Visages : la recherche du passage est déjà en cache.
+  const scan = useQuery({
+    queryKey: ["scan", p.video.id, p.selection.start, p.selection.end],
+    queryFn: () => api.scan(p.video.id, p.selection.start, p.selection.end),
     staleTime: Infinity,
   });
-  const cropOf = (m: Mapping) => targetFaces.data?.faces.find((f) => sameBox(f.box, m.box))?.crop;
+  const cropOf = (m: Mapping) => (scan.data ? scan.data.faces[faceIndex(scan.data, m)]?.crop : undefined);
 
   const launch = useMutation({
     mutationFn: () =>
@@ -160,9 +159,9 @@ function Setup(p: Props) {
                       {crop ? <img src={crop} alt="" className="size-8 rounded-full object-cover ring-1 ring-line-strong" /> : <span className="size-8 rounded-full bg-raised" />}
                       <ArrowRight className="size-3.5 text-faint" />
                       {person?.cover_url ? (
-                        <img src={person.cover_url} alt="" className="size-8 rounded-full object-cover ring-2" style={{ ["--tw-ring-color" as string]: personColor(m.person) }} />
+                        <img src={person.cover_url} alt="" className="size-8 rounded-full object-cover ring-2" style={{ ["--tw-ring-color" as string]: styleOf(persons, m.person).color }} />
                       ) : (
-                        <PersonBadge id={m.person} size="md" />
+                        <PersonBadge style={styleOf(persons, m.person)} size="md" />
                       )}
                       <span>{person?.name ?? `Personne ${m.person}`}</span>
                       <span className="text-[12px] text-muted">

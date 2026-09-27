@@ -1,10 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
-import { History } from "lucide-react";
+import { BookUser, History } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { api, type Job, type Level, type Mapping, type Status, type Video } from "./lib/api";
 import { Stepper } from "./components/Stepper";
 import { HistoryDrawer } from "./components/HistoryDrawer";
+import { LibraryDrawer } from "./components/LibraryDrawer";
 import { Button, cx } from "./components/ui";
 import type { Selection } from "./components/trimmer/Trimmer";
 import { VideoStep } from "./steps/VideoStep";
@@ -40,6 +41,7 @@ function loadSession(): Session {
 export default function App() {
   const [s, setS] = useState<Session>(loadSession);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
   const patch = useCallback((p: Partial<Session>) => setS((prev) => ({ ...prev, ...p })), []);
 
   useEffect(() => {
@@ -114,6 +116,9 @@ export default function App() {
             <Stepper current={step} reachable={reachable} onGo={(i) => patch({ step: i })} />
           </div>
           <EngineStatus data={status.data} error={!!status.error} />
+          <Button variant="ghost" size="sm" onClick={() => setLibraryOpen(true)} icon={<BookUser className="size-4" />} aria-label="Personnes">
+            <span className="hidden lg:inline">Personnes</span>
+          </Button>
           <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(true)} icon={<History className="size-4" />} aria-label="Historique">
             <span className="hidden lg:inline">Historique</span>
           </Button>
@@ -175,6 +180,7 @@ export default function App() {
       </main>
 
       <HistoryDrawer open={historyOpen} onClose={() => setHistoryOpen(false)} onOpenJob={openJob} />
+      <LibraryDrawer open={libraryOpen} onClose={() => setLibraryOpen(false)} />
     </div>
   );
 }

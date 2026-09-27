@@ -11,7 +11,16 @@ cuda_device_id: 0
 # DirectML sur un portable à deux cartes : split = le swap sur la carte la plus puissante (mémoire dédiée),
 # l'analyse (détection, identité, segmentation) sur l'autre. ×3,5 plus rapide que tout sur la MX450 (2 Go saturés).
 dml_placement: split
-det_size: 640          # taille d'entrée du détecteur (320 = plus rapide, moins précis)
+det_size: 640          # taille d'entrée du détecteur pendant le rendu (320 = plus rapide, moins précis)
+det_thresh: 0.4        # confiance minimale d'un visage pendant le rendu (l'identité filtre les faux positifs)
+
+# Recherche des personnes d'un passage (étape Visages) : plusieurs images, détection plus fine et plus tolérante.
+scan:
+  samples: 12          # images analysées, réparties sur tout le passage
+  det_size: 960        # plus fin que le rendu : trouve les petits visages (plans larges, arrière-plan)
+  det_thresh: 0.3      # accepte les visages flous, de profil ou dans l'ombre
+  min_face_px: 24      # en dessous, trop petit pour un remplacement propre
+  same_person: 0.4     # similarité ArcFace pour regrouper deux visages comme la même personne
 
 paths:
   models: models

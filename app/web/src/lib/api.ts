@@ -46,13 +46,22 @@ export type UrlInfo = {
   max_duration_s: number;
 };
 
-export type Photo = { id: string; name: string; ok: boolean; person: string | null; crop_url: string | null; photo_url: string };
-export type Person = { id: string; name: string; count: number; cover_url: string | null };
-export type FaceSet = { id: string; photos: Photo[]; persons: Person[]; ok_count: number };
+/** Photo d'une personne de la bibliothèque (toujours avec un visage détecté). */
+export type Photo = { id: string; name: string; crop_url: string; photo_url: string };
+/** Personne de la bibliothèque : permanente, réutilisable dans toutes les vidéos. */
+export type Person = { id: string; name: string; count: number; cover_url: string | null; photos: Photo[]; created_at?: number; updated_at?: number };
+export type RejectedPhoto = { id: string; name: string; photo_url: string };
+/** Résultat de l'import d'une photo : reconnue dans une personne existante, nouvelle personne, ou pas de visage. */
+export type ImportResult = { ok: boolean; name: string; person_id?: string; person_name?: string; created?: boolean };
+/** Session d'une vidéo : les personnes de la bibliothèque choisies pour ce rendu. */
+export type FaceSet = { id: string; persons: Person[]; rejected: RejectedPhoto[]; ok_count: number; legacy?: boolean; imported?: ImportResult[] };
 
 export type Box = [number, number, number, number];
 export type DetectedFace = { box: Box; score: number; crop: string };
 export type FramesFaces = { t: number; width: number; height: number; frame: string; faces: DetectedFace[] };
+/** Une personne vue dans le passage (plusieurs images analysées), représentée par sa meilleure apparition. */
+export type ScanFace = { t: number; box: Box; score: number; seen: number; height_px: number; maybe_same: number | null; crop: string };
+export type PassageScan = { start: number; end: number; samples: number; faces: ScanFace[]; frames: Record<string, string>; width: number; height: number };
 
 export type Target = { t: number; box: Box };
 /** Un visage du clip → une personne source. person = null : visage laissé intact (choix explicite). */
@@ -192,7 +201,11 @@ export const api = {
   deleteVideo: (id: string) => request<{ ok: boolean }>("DELETE", `/api/videos/${id}`),
   facesAt: (id: string, t: number) => request<FramesFaces>("GET", `/api/videos/${id}/faces?t=${t.toFixed(3)}`),
 
-  createFaceSet: (files: File[]) => {
+  scan: (id: string, start: number, end: number) =>
+    request<PassageScan>("GET", `/api/videos/${id}/scan?start=${start.toFixed(2)}&end=${end.toFixed(2)}`),
+
+  // Session de la vidéo (personnes choisies pour ce rendu)
+  createFaceSet: (files: File[] = []) => {
     const form = new FormData();
     files.forEach((f) => form.append("files", f));
     form.append("consent", "true");
@@ -201,13 +214,29 @@ export const api = {
   addPhotos: (setId: string, files: File[]) => {
     const form = new FormData();
     files.forEach((f) => form.append("files", f));
+    form.append("consent", "true");
     return upload<FaceSet>(`/api/faces/${setId}/photos`, form);
   },
   faceSet: (setId: string) => request<FaceSet>("GET", `/api/faces/${setId}`),
-  deletePhoto: (setId: string, photoId: string) =>
-    request<FaceSet>("DELETE", `/api/faces/${setId}/photos/${photoId}`),
-  movePhoto: (setId: string, photoId: string, person: string | "new") =>
-    request<FaceSet>("PATCH", `/api/faces/${setId}/photos/${photoId}`, { person }),
+  addPersonToSet: (setId: string, personId: string) => request<FaceSet>("POST", `/api/faces/${setId}/people`, { person_id: personId }),
+  removePersonFromSet: (setId: string, personId: string) => request<FaceSet>("DELETE", `/api/faces/${setId}/people/${personId}`),
+  deleteRejected: (setId: string, rid: string) => request<FaceSet>("DELETE", `/api/faces/${setId}/rejected/${rid}`),
+
+  // Bibliothèque de personnes
+  people: (q = "") => request<Person[]>("GET", `/api/people${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+  person: (pid: string) => request<Person>("GET", `/api/people/${pid}`),
+  renamePerson: (pid: string, name: string) => request<Person>("PATCH", `/api/people/${pid}`, { name }),
+  deletePerson: (pid: string) => request<{ ok: boolean }>("DELETE", `/api/people/${pid}`),
+  movePhoto: (pid: string, photoId: string, person: string | "new") =>
+    request<{ moved_to: string; source_exists: boolean }>("PATCH", `/api/people/${pid}/photos/${photoId}`, { person }),
+  deletePhoto: (pid: string, photoId: string) =>
+    request<{ ok: boolean; person_exists: boolean }>("DELETE", `/api/people/${pid}/photos/${photoId}`),
+  importToLibrary: (files: File[]) => {
+    const form = new FormData();
+    files.forEach((f) => form.append("files", f));
+    form.append("consent", "true");
+    return upload<{ imported: ImportResult[]; people: Person[] }>("/api/people/photos", form);
+  },
 
   jobs: () => request<Job[]>("GET", "/api/jobs"),
   job: (id: string) => request<Job>("GET", `/api/jobs/${id}`),

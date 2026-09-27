@@ -28,7 +28,8 @@ def analyzer():
     app = FaceAnalysis(name=str(pack), allowed_modules=["detection", "recognition"], providers=providers(cfg, role="analysis"))
     size = int(cfg.det_size)
     # ctx_id < 0 force insightface à repasser la détection sur CPU : on ne le fait que sans carte graphique.
-    app.prepare(ctx_id=0 if accelerator(cfg) != "cpu" else -1, det_size=(size, size))
+    app.prepare(ctx_id=0 if accelerator(cfg) != "cpu" else -1, det_size=(size, size),
+                det_thresh=float(cfg.get("det_thresh", 0.5)))
     return app
 
 
@@ -39,12 +40,16 @@ def detect(frame: np.ndarray) -> list:
     return sorted(faces, key=lambda f: area(f.bbox), reverse=True)
 
 
-def detect_boxes(frame: np.ndarray) -> list:
-    """Détection seule, sans embedding (~2x plus rapide) : le suivi n'a pas besoin d'ArcFace à chaque frame."""
+def detect_boxes(frame: np.ndarray, size: int | None = None, thresh: float | None = None) -> list:
+    """Détection seule, sans embedding (~2x plus rapide) : le suivi n'a pas besoin d'ArcFace à chaque frame.
+
+    size / thresh : taille d'analyse et confiance minimale pour cet appel (par défaut, ceux du rendu).
+    """
     from insightface.app.common import Face
 
     with _lock:
-        bboxes, kpss = analyzer().det_model.detect(frame, max_num=0, metric="default")
+        bboxes, kpss = analyzer().det_model.detect(
+            frame, input_size=(size, size) if size else None, max_num=0, metric="default", det_thresh=thresh)
     faces = [Face(bbox=b[:4], kps=k, det_score=b[4]) for b, k in zip(bboxes, kpss)]
     return sorted(faces, key=lambda f: area(f.bbox), reverse=True)
 

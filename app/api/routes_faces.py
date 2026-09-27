@@ -1,111 +1,61 @@
-"""Visages source : un « set » de 1 à 20 photos, rangées automatiquement par personne.
+"""Session de visages d'une vidéo : les personnes de la bibliothèque choisies pour ce rendu.
 
-Chaque photo est analysée dès l'ajout ; son embedding ArcFace est comparé à la moyenne de chaque personne
-déjà connue : assez proche → même personne, sinon → nouvelle personne (A, B, C…). On peut corriger à la main.
-
-Pas de table : data/faces/<set_id>/set.json + par photo <id>.jpg, <id>_crop.jpg, <id>.npy (embedding).
+data/faces/<set_id>/set.json  {people: [id de personne…], rejected: [{id, name}]}
+Les photos importées ici entrent dans la bibliothèque (app/library.py), reconnues ou comme nouvelle personne ;
+seules les photos sans visage restent dans la session (nettoyées avec elle au bout de retention_hours).
 """
 from __future__ import annotations
 
 import json
 import shutil
-import string
 from pathlib import Path
 
 import cv2
-import numpy as np
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from app import db
-from src.assets import person_tone
+from app import db, library
 from src.config import load_config
 from src.faces import ModelsMissing
-from src.identity import SourceFace, analyze_photo, average_embedding
-from src.levels import FACE_TONE, PersonAssets
-from src.tone import ToneStats
+from src.levels import PersonAssets
 
 from .common import not_found, save_upload
 
 router = APIRouter(prefix="/api/faces", tags=["faces"])
 
-# Similarité cosinus ArcFace : même personne ≈ 0,4–0,8 ; personnes différentes < 0,25.
-SAME_PERSON = 0.35
 
-
-class MoveIn(BaseModel):
-    person: str  # id d'une personne existante, ou "new"
+class PersonRef(BaseModel):
+    person_id: str
 
 
 def _dir(set_id: str) -> Path:
     try:
         d = db.folder("faces", set_id)
     except ValueError:
-        raise not_found("Set de visages")
+        raise not_found("Session de visages")
     if not (d / "set.json").is_file():
-        raise not_found("Set de visages")
+        raise not_found("Session de visages")
     return d
 
 
 def _load(d: Path) -> dict:
     data = json.loads((d / "set.json").read_text(encoding="utf-8"))
-    if "persons" not in data:  # ancien format : une seule identité
-        data["persons"] = [{"id": "A", "name": "Personne A"}] if any(p["ok"] for p in data["photos"]) else []
-        for p in data["photos"]:
-            p["person"] = "A" if p["ok"] else None
+    if "people" not in data:  # ancienne session (personnes A, B… internes) : non reprise automatiquement
+        return {"people": [], "rejected": [], "legacy": True}
     return data
 
 
 def _save(d: Path, data: dict) -> None:
-    _prune(data)
+    data = {k: v for k, v in data.items() if k in ("people", "rejected")}
     (d / "set.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
-def _prune(data: dict) -> None:
-    """Retire les personnes qui n'ont plus aucune photo valide."""
-    used = {p["person"] for p in data["photos"] if p["ok"]}
-    data["persons"] = [p for p in data["persons"] if p["id"] in used]
-
-
-def _new_person(data: dict) -> str:
-    taken = {p["id"] for p in data["persons"]}
-    letter = next((c for c in string.ascii_uppercase if c not in taken), None)
-    if letter is None:
-        raise HTTPException(422, "Trop de personnes différentes.")
-    data["persons"].append({"id": letter, "name": f"Personne {letter}"})
-    data["persons"].sort(key=lambda p: p["id"])
-    return letter
-
-
-def _person_embeddings(d: Path, data: dict, person: str) -> list[np.ndarray]:
-    return [np.load(d / f"{p['id']}.npy") for p in data["photos"] if p["ok"] and p["person"] == person]
-
-
-def _closest_person(d: Path, data: dict, emb: np.ndarray) -> str | None:
-    best, best_sim = None, SAME_PERSON
-    for person in data["persons"]:
-        embs = _person_embeddings(d, data, person["id"])
-        if not embs:
-            continue
-        sim = float(np.dot(average_embedding(embs), emb))
-        if sim >= best_sim:
-            best, best_sim = person["id"], sim
-    return best
-
-
 def public(set_id: str, data: dict) -> dict:
-    photos = [
-        {**p, "crop_url": f"/api/faces/{set_id}/photos/{p['id']}/crop.jpg" if p["ok"] else None,
-         "photo_url": f"/api/faces/{set_id}/photos/{p['id']}/photo.jpg"}
-        for p in data["photos"]
-    ]
-    persons = [
-        {**person, "count": sum(1 for p in photos if p["ok"] and p["person"] == person["id"]),
-         "cover_url": next((p["crop_url"] for p in photos if p["ok"] and p["person"] == person["id"]), None)}
-        for person in data["persons"]
-    ]
-    return {"id": set_id, "photos": photos, "persons": persons, "ok_count": sum(p["ok"] for p in photos)}
+    persons = [library.public(library.load(pid)) for pid in data["people"] if library.exists(pid)]
+    rejected = [{**r, "photo_url": f"/api/faces/{set_id}/rejected/{r['id']}.jpg"} for r in data.get("rejected", [])]
+    return {"id": set_id, "persons": persons, "rejected": rejected, "ok_count": sum(p["count"] for p in persons),
+            "legacy": bool(data.get("legacy"))}
 
 
 def person_ids(set_id: str) -> set[str]:
@@ -113,104 +63,80 @@ def person_ids(set_id: str) -> set[str]:
         d = _dir(set_id)
     except HTTPException:
         return set()
-    return {p["id"] for p in _load(d)["persons"]}
-
-
-def load_source_face(set_id: str, person: str | None = None) -> SourceFace:
-    """Identité d'une personne = moyenne des embeddings de ses photos (toutes les photos si person=None)."""
-    d = db.folder("faces", set_id)
-    data = _load(d)
-    if person is None:
-        embeddings = [np.load(d / f"{p['id']}.npy") for p in data["photos"] if p["ok"]]
-    else:
-        embeddings = _person_embeddings(d, data, person)
-    return SourceFace(average_embedding(embeddings))
-
-
-def person_photos(set_id: str, person: str | None) -> list[Path]:
-    """Photos valides d'une personne, en meilleure qualité disponible (1024 px, sinon vignette)."""
-    d = db.folder("faces", set_id)
-    data = _load(d)
-    out = []
-    for p in data["photos"]:
-        if p["ok"] and (person is None or p["person"] == person):
-            full = d / f"{p['id']}_full.jpg"
-            out.append(full if full.is_file() else d / f"{p['id']}.jpg")
-    return out
+    return {pid for pid in _load(d)["people"] if library.exists(pid)}
 
 
 def load_person_assets(set_id: str, person: str | None, level: str) -> PersonAssets:
-    """Tout ce dont le niveau a besoin pour cette personne. Le teint est mis en cache (recalculé si les photos changent)."""
-    assets = PersonAssets(source=load_source_face(set_id, person), photos=person_photos(set_id, person))
-    if level in (FACE_TONE,):
-        d = db.folder("faces", set_id)
-        key = ",".join(sorted(p.stem for p in assets.photos))
-        cache = d / f"tone_{person or 'all'}.json"
-        cached = json.loads(cache.read_text(encoding="utf-8")) if cache.is_file() else None
-        if cached and cached.get("key") == key:
-            assets.tone = ToneStats.from_dict(cached["tone"])
-        else:
-            assets.tone = person_tone(assets.photos)
-            if assets.tone is None:
-                raise RuntimeError(f"Teint introuvable sur les photos de la personne {person} (visage trop petit ou masqué).")
-            cache.write_text(json.dumps({"key": key, "tone": assets.tone.to_dict()}), encoding="utf-8")
-    return assets
+    """Données d'une personne de la session, pour le worker."""
+    if person is None or person not in person_ids(set_id):
+        raise RuntimeError("Personne absente de cette session (ancienne session ou personne retirée).")
+    return library.assets(person, level)
 
 
-async def _add(set_id: str, d: Path, files: list[UploadFile]) -> dict:
+async def _import(d: Path, data: dict, files: list[UploadFile]) -> list[dict]:
+    """Importe les photos dans la bibliothèque et ajoute les personnes concernées à la session."""
     cfg = load_config()
-    data = _load(d)
-    if len(data["photos"]) + len(files) > cfg.photos.max:
-        raise HTTPException(422, f"{cfg.photos.max} photos maximum.")
+    if len(files) > cfg.photos.max:
+        raise HTTPException(422, f"{cfg.photos.max} photos maximum par envoi.")
+    results = []
     for upload in files:
         ext = Path(upload.filename or "").suffix.lower()
         if ext not in cfg.upload.photo_ext:
             raise HTTPException(415, f"{upload.filename} : format non supporté (jpg, png, webp).")
-        photo_id = db.new_id()
-        raw = d / f"{photo_id}{ext}"
+        raw = d / f"upload_{db.new_id()}{ext}"
         await save_upload(upload, raw, float(cfg.upload.photo_max_mb))
         try:
-            result = analyze_photo(raw)
+            res = library.import_photo(raw, upload.filename or raw.name)
         except ModelsMissing as exc:
-            raise HTTPException(503, str(exc)) from exc
-        entry = {"id": photo_id, "name": upload.filename, "ok": result.ok, "person": None}
-        img = cv2.imdecode(np.fromfile(str(raw), np.uint8), cv2.IMREAD_COLOR)
-        if img is not None:
-            # 1024 px pour les niveaux qui ont besoin de détails (tête, personne entière), 480 px pour l'UI.
-            for suffix, side, quality in (("_full", 1024, 92), ("", 480, 85)):
-                scale = min(1.0, side / max(img.shape[:2]))
-                resized = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-                cv2.imwrite(str(d / f"{photo_id}{suffix}.jpg"), resized, [cv2.IMWRITE_JPEG_QUALITY, quality])
-        if raw.suffix != ".jpg" or img is None:
             raw.unlink(missing_ok=True)
-        if result.ok:
-            cv2.imwrite(str(d / f"{photo_id}_crop.jpg"), result.crop, [cv2.IMWRITE_JPEG_QUALITY, 88])
-            np.save(d / f"{photo_id}.npy", result.embedding)
-            # Rangement automatique : personne la plus proche, sinon nouvelle personne.
-            entry["person"] = _closest_person(d, data, result.embedding) or _new_person(data)
-        data["photos"].append(entry)
+            raise HTTPException(503, str(exc)) from exc
+        if res["ok"]:
+            if res["person_id"] not in data["people"]:
+                data["people"].append(res["person_id"])
+        else:  # pas de visage : on garde une vignette pour l'afficher, dans la session seulement
+            rid = db.new_id()
+            img = res.pop("image")
+            if img is not None:
+                scale = min(1.0, 480 / max(img.shape[:2]))
+                cv2.imwrite(str(d / f"{rid}.jpg"), cv2.resize(img, None, fx=scale, fy=scale), [cv2.IMWRITE_JPEG_QUALITY, 85])
+            data.setdefault("rejected", []).append({"id": rid, "name": res["name"]})
+            raw.unlink(missing_ok=True)
+        res.pop("image", None)
+        results.append(res)
     _save(d, data)
-    return public(set_id, data)
+    return results
+
+
+def _require_consent(consent: bool) -> None:
+    if not consent:
+        raise HTTPException(422, "Confirmez que les photos sont les vôtres ou celles d'une personne consentante.")
 
 
 @router.post("")
-async def create_set(files: list[UploadFile] = File(...), consent: bool = Form(False)) -> dict:
-    if not consent:
-        raise HTTPException(422, "Confirmez que les photos sont les vôtres ou celles d'une personne consentante.")
+async def create_set(files: list[UploadFile] = File(default=[]), consent: bool = Form(False)) -> dict:
+    """Nouvelle session ; avec des photos, elles sont importées tout de suite."""
+    if files:
+        _require_consent(consent)
     set_id = db.new_id()
     d = db.folder("faces", set_id)
     d.mkdir(parents=True)
-    _save(d, {"photos": [], "persons": []})
+    data = {"people": [], "rejected": []}
+    _save(d, data)
     try:
-        return await _add(set_id, d, files)
+        results = await _import(d, data, files) if files else []
     except BaseException:
         shutil.rmtree(d, ignore_errors=True)
         raise
+    return {**public(set_id, data), "imported": results}
 
 
 @router.post("/{set_id}/photos")
-async def add_photos(set_id: str, files: list[UploadFile] = File(...)) -> dict:
-    return await _add(set_id, _dir(set_id), files)
+async def add_photos(set_id: str, files: list[UploadFile] = File(...), consent: bool = Form(True)) -> dict:
+    _require_consent(consent)
+    d = _dir(set_id)
+    data = _load(d)
+    results = await _import(d, data, files)
+    return {**public(set_id, data), "imported": results}
 
 
 @router.get("/{set_id}")
@@ -219,43 +145,45 @@ def get_set(set_id: str) -> dict:
     return public(set_id, _load(d))
 
 
-@router.patch("/{set_id}/photos/{photo_id}")
-def move_photo(set_id: str, photo_id: str, body: MoveIn) -> dict:
-    """Corrige le rangement : déplace une photo vers une autre personne (ou une nouvelle)."""
+@router.post("/{set_id}/people")
+def add_person(set_id: str, body: PersonRef) -> dict:
+    """Ajoute une personne de la bibliothèque à cette vidéo."""
+    d = _dir(set_id)
+    if not library.exists(body.person_id):
+        raise not_found("Personne")
+    data = _load(d)
+    if body.person_id not in data["people"]:
+        data["people"].append(body.person_id)
+        _save(d, data)
+    return public(set_id, data)
+
+
+@router.delete("/{set_id}/people/{person_id}")
+def remove_person(set_id: str, person_id: str) -> dict:
+    """Retire une personne de cette vidéo (elle reste dans la bibliothèque)."""
     d = _dir(set_id)
     data = _load(d)
-    photo = next((p for p in data["photos"] if p["id"] == photo_id), None)
-    if photo is None or not photo["ok"]:
-        raise not_found("Photo")
-    if body.person == "new":
-        photo["person"] = _new_person(data)
-    elif body.person in {p["id"] for p in data["persons"]}:
-        photo["person"] = body.person
-    else:
-        raise HTTPException(422, "Personne inconnue.")
+    data["people"] = [p for p in data["people"] if p != person_id]
     _save(d, data)
     return public(set_id, data)
 
 
-@router.delete("/{set_id}/photos/{photo_id}")
-def delete_photo(set_id: str, photo_id: str) -> dict:
+@router.delete("/{set_id}/rejected/{rid}")
+def delete_rejected(set_id: str, rid: str) -> dict:
     d = _dir(set_id)
-    if not photo_id.isalnum():
+    if not rid.isalnum():
         raise not_found("Photo")
     data = _load(d)
-    data["photos"] = [p for p in data["photos"] if p["id"] != photo_id]
-    for f in d.glob(f"{photo_id}*"):
-        f.unlink(missing_ok=True)
+    data["rejected"] = [r for r in data.get("rejected", []) if r["id"] != rid]
+    (d / f"{rid}.jpg").unlink(missing_ok=True)
     _save(d, data)
     return public(set_id, data)
 
 
-@router.get("/{set_id}/photos/{photo_id}/{kind}.jpg")
-def photo_file(set_id: str, photo_id: str, kind: str) -> FileResponse:
+@router.get("/{set_id}/rejected/{rid}.jpg")
+def rejected_file(set_id: str, rid: str) -> FileResponse:
     d = _dir(set_id)
-    if not photo_id.isalnum() or kind not in ("crop", "photo"):
-        raise not_found("Photo")
-    path = d / (f"{photo_id}_crop.jpg" if kind == "crop" else f"{photo_id}.jpg")
-    if not path.is_file():
+    path = d / f"{rid}.jpg"
+    if not rid.isalnum() or not path.is_file():
         raise not_found("Photo")
     return FileResponse(path, media_type="image/jpeg")

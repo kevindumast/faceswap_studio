@@ -25,6 +25,39 @@ def isolated_config(tmp_path_factory):
     yield tmp
 
 
+@pytest.fixture
+def make_session():
+    """Crée des personnes de bibliothèque aux empreintes connues + une session de vidéo qui les utilise.
+
+    make({"Kevin": [emb, …], "Pote": [emb]}) → (set_id, {"Kevin": person_id, "Pote": person_id})
+    """
+    import json
+    import time
+
+    import numpy as np
+
+    def make(embeddings: dict) -> tuple[str, dict[str, str]]:
+        from app import db, library
+
+        ids = {}
+        for label, embs in embeddings.items():
+            person = library.create(label)
+            d = library.root() / person["id"]
+            for e in embs:
+                ph = db.new_id()
+                np.save(d / f"{ph}.npy", (np.asarray(e) / np.linalg.norm(e)).astype(np.float32))
+                person["photos"].append({"id": ph, "name": f"{ph}.jpg", "added_at": time.time()})
+            library._save(person)
+            ids[label] = person["id"]
+        set_id = db.new_id()
+        d = db.folder("faces", set_id)
+        d.mkdir(parents=True)
+        (d / "set.json").write_text(json.dumps({"people": list(ids.values()), "rejected": []}), encoding="utf-8")
+        return set_id, ids
+
+    return make
+
+
 @pytest.fixture(scope="session")
 def sample_video(isolated_config) -> Path:
     """Vidéo de synthèse de 8 s à 25 i/s avec son (mire + bip), générée par ffmpeg."""

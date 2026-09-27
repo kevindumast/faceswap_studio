@@ -124,9 +124,8 @@ def create_job(body: JobIn) -> dict:
     video = get_or_404("videos", body.video_id, "Vidéo")
     if video["status"] != "ready":
         raise HTTPException(409, "La vidéo n'est pas prête.")
-    face_dir = db.folder("faces", body.face_set_id) if body.face_set_id.isalnum() else None
-    if face_dir is None or not any(face_dir.glob("*.npy")):
-        raise HTTPException(422, "Aucune photo source avec un visage détecté.")
+    if not body.face_set_id.isalnum() or not person_ids(body.face_set_id):
+        raise HTTPException(422, "Aucune personne source pour cette vidéo : ajoute des photos ou choisis quelqu'un dans ta bibliothèque.")
     length = body.end - body.start
     seg = cfg.segment
     if body.start < 0 or body.end > video["info"]["duration"] + 0.05:
