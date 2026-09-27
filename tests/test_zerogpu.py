@@ -30,10 +30,13 @@ def ready_video(client, sample_video):
 
 def test_settings_never_expose_the_token(client):
     assert client.get("/api/settings").json()["zerogpu"]["configured"] is False
-    r = client.put("/api/settings/zerogpu", json={"space": "kevin/faceswap-gpu", "token": "hf_secret", "key": "k123"})
+    token = "hf_" + "s3cr3t" * 5 + "AB12"
+    r = client.put("/api/settings/zerogpu", json={"space": "kevin/faceswap-gpu", "token": token, "key": "k123"})
     z = r.json()["zerogpu"]
-    assert z == {"space": "kevin/faceswap-gpu", "token_set": True, "key_set": True, "configured": True}
-    assert "hf_secret" not in json.dumps(client.get("/api/settings").json())
+    assert z == {"space": "kevin/faceswap-gpu", "token_set": True, "key_set": True, "token_hint": "hf_…AB12",
+                 "configured": True, "tested": False}
+    exposed = json.dumps(client.get("/api/settings").json())
+    assert "s3cr3t" not in exposed and "k123" not in exposed
     assert client.put("/api/settings/zerogpu", json={"space": "pas un space"}).status_code == 422
     assert client.delete("/api/settings/zerogpu").json()["zerogpu"]["configured"] is False
 

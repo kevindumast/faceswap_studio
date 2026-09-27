@@ -27,8 +27,13 @@ class ZeroGPUIn(BaseModel):
 
 def public() -> dict:
     s = zg.settings()
-    return {"space": s["space"] or None, "token_set": bool(s["token"]), "key_set": bool(s["key"]),
-            "configured": zg.configured()}
+    token = s["token"] or ""
+    return {"space": s["space"] or None, "token_set": bool(token), "key_set": bool(s["key"]),
+            # 4 derniers caractères seulement, pour reconnaître le jeton sans l'exposer
+            "token_hint": f"hf_…{token[-4:]}" if len(token) > 8 else None,
+            "configured": zg.configured(),
+            # dernier « Tester la connexion » réussi avec ces réglages (effacé à chaque modification)
+            "tested": bool(s["space"]) and db.get_meta("zerogpu_tested") == s["space"]}
 
 
 @router.get("")
@@ -42,6 +47,7 @@ def save_zerogpu(body: ZeroGPUIn) -> dict:
     if not SPACE_RE.match(space):
         raise HTTPException(422, "Nom de Space attendu : ton-pseudo/nom-du-space.")
     db.set_meta("zerogpu_space", space)
+    db.set_meta("zerogpu_tested", "")
     if body.token is not None:
         db.set_meta("zerogpu_token", body.token.strip())
     if body.key is not None:
@@ -51,7 +57,7 @@ def save_zerogpu(body: ZeroGPUIn) -> dict:
 
 @router.delete("/zerogpu")
 def clear_zerogpu() -> dict:
-    for key in ("zerogpu_space", "zerogpu_token", "zerogpu_key"):
+    for key in ("zerogpu_space", "zerogpu_token", "zerogpu_key", "zerogpu_tested"):
         db.set_meta(key, "")
     return {"zerogpu": public()}
 
@@ -63,5 +69,7 @@ def test_zerogpu() -> dict:
     try:
         health = zg.ZeroGPUClient.from_settings().health()
     except zg.ZeroGPUError as exc:
+        db.set_meta("zerogpu_tested", "")
         raise HTTPException(502, str(exc)) from exc
+    db.set_meta("zerogpu_tested", zg.settings()["space"])
     return {"ok": True, "latency_ms": round((time.perf_counter() - t0) * 1000), **health}

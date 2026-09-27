@@ -27,9 +27,9 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from app import db  # noqa: E402
-from src.netfix import drop_broken_cert_vars  # noqa: E402
+from src.netfix import setup_tls  # noqa: E402
 
-drop_broken_cert_vars()  # sinon huggingface_hub (httpx) plante sur un certificat absent
+setup_tls()  # certificat absent ou proxy d'entreprise : vérification avec le magasin du système
 
 ZEROGPU = "zero-a10g"  # identifiant Hugging Face du matériel ZeroGPU
 

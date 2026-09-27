@@ -144,7 +144,16 @@ export type Status = {
   youtube_max_duration_s: number;
 };
 
-export type ZeroGPUSettings = { space: string | null; token_set: boolean; key_set: boolean; configured: boolean };
+export type ZeroGPUSettings = {
+  space: string | null;
+  token_set: boolean;
+  key_set: boolean;
+  /** « hf_…AB12 » : 4 derniers caractères seulement. */
+  token_hint: string | null;
+  configured: boolean;
+  /** Dernier test de connexion réussi avec ces réglages. */
+  tested: boolean;
+};
 export type ZeroGPUTest = { ok: boolean; latency_ms: number; version: string; levels: Level[]; zerogpu: boolean };
 
 export class ApiError extends Error {

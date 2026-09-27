@@ -45,7 +45,7 @@ export function EngineSettings({ open, onClose, status }: { open: boolean; onClo
     },
   });
   const clear = useMutation({ mutationFn: api.clearZeroGPU, onSuccess: refresh });
-  const test = useMutation({ mutationFn: api.testZeroGPU });
+  const test = useMutation({ mutationFn: api.testZeroGPU, onSettled: () => qc.invalidateQueries({ queryKey: ["settings"] }) });
 
   const engine = status?.engine;
   const used = status?.gpu.used_today_s ?? 0;
@@ -100,8 +100,14 @@ export function EngineSettings({ open, onClose, status }: { open: boolean; onClo
                     <Zap className="size-4 text-warn" /> GPU distant · ZeroGPU
                   </h3>
                   {z && (
-                    <span className={cx("rounded-md px-1.5 py-0.5 text-[11px] font-medium", z.configured ? "bg-accent-soft text-accent" : "bg-overlay text-muted")}>
-                      {z.configured ? "Branché" : "Non branché"}
+                    <span
+                      className={cx(
+                        "rounded-md px-1.5 py-0.5 text-[11px] font-medium",
+                        z.tested ? "bg-accent-soft text-accent" : z.configured ? "bg-warn-soft text-warn" : "bg-overlay text-muted",
+                      )}
+                      title={z.configured && !z.tested ? "Réglages enregistrés : clique sur « Tester la connexion » pour vérifier" : undefined}
+                    >
+                      {z.tested ? "Connecté" : z.configured ? "Enregistré · à tester" : "Non branché"}
                     </span>
                   )}
                 </div>
@@ -154,14 +160,24 @@ export function EngineSettings({ open, onClose, status }: { open: boolean; onClo
                   </ol>
                 )}
 
-                <details className="group rounded-xl ring-1 ring-line" open={!!z?.configured}>
+                {z?.configured && (
+                  <dl className="space-y-2 rounded-xl bg-raised p-4 text-[13px] ring-1 ring-line">
+                    <Saved label="Space" value={z.space} />
+                    <Saved label="Jeton Hugging Face" value={z.token_set ? `enregistré · ${z.token_hint ?? "hf_…"}` : null} />
+                    <Saved label="Clé APP_KEY" value={z.key_set ? "enregistrée" : null} />
+                    <p className="pt-1 text-[12px] text-faint">Le jeton et la clé restent sur ce PC et ne sont jamais réaffichés.</p>
+                  </dl>
+                )}
+
+                <details className="group rounded-xl ring-1 ring-line">
                   <summary className="cursor-pointer list-none px-4 py-3 text-[13px] font-medium">
-                    {z?.configured ? "Réglages" : "Ou saisir les réglages à la main"}
+                    {z?.configured ? "Modifier les réglages" : "Ou saisir les réglages à la main"}
                   </summary>
                   <div className="space-y-3 border-t border-line p-4">
+                    {z?.configured && <p className="text-[12px] text-muted">Laisse un champ vide pour garder la valeur enregistrée.</p>}
                     <Field label="Space" value={space} onChange={setSpace} placeholder="ton-pseudo/faceswap-gpu" />
-                    <Field label="Jeton Hugging Face" value={token} onChange={setToken} placeholder={z?.token_set ? "enregistré (laisser vide pour garder)" : "hf_…"} secret />
-                    <Field label="Clé APP_KEY" value={key} onChange={setKey} placeholder={z?.key_set ? "enregistrée (laisser vide pour garder)" : "affichée par le script"} secret />
+                    <Field label="Jeton Hugging Face" value={token} onChange={setToken} placeholder={z?.token_set ? `${z.token_hint ?? "hf_…"} (inchangé)` : "hf_…"} secret />
+                    <Field label="Clé APP_KEY" value={key} onChange={setKey} placeholder={z?.key_set ? "•••••••• (inchangée)" : "affichée par le script"} secret />
                     <div className="flex flex-wrap gap-2">
                       <Button variant="secondary" size="sm" loading={save.isPending} disabled={!space.trim()} onClick={() => save.mutate()}>
                         Enregistrer
@@ -200,6 +216,18 @@ export function EngineSettings({ open, onClose, status }: { open: boolean; onClo
         </>
       )}
     </AnimatePresence>
+  );
+}
+
+function Saved({ label, value }: { label: string; value: string | null }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <dt className="text-muted">{label}</dt>
+      <dd className={cx("flex items-center gap-1.5 truncate font-mono text-[12px]", value ? "text-fg" : "text-danger")}>
+        {value ? <Check className="size-3.5 shrink-0 text-accent" /> : <X className="size-3.5 shrink-0" />}
+        {value ?? "manquant"}
+      </dd>
+    </div>
   );
 }
 

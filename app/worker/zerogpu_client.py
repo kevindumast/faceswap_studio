@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Callable
 
 from app import db
-from src.netfix import drop_broken_cert_vars
+from src.netfix import setup_tls
 
-drop_broken_cert_vars()  # sinon httpx (gradio_client) plante sur un certificat absent
+setup_tls()  # certificat absent ou proxy d'entreprise : vérification avec le magasin du système
 
 
 class ZeroGPUError(RuntimeError):
