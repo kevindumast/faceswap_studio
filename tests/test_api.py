@@ -62,6 +62,19 @@ def test_unknown_person_rejected(client, ready_video, make_session):
     assert r.status_code == 422 and "Z" in r.json()["detail"]
 
 
+def test_same_person_on_many_faces(client, ready_video, make_session):
+    """Une personne peut remplacer plusieurs visages ; au-delà du garde-fou, message clair."""
+    from app.api.routes_jobs import MAX_MAPPINGS
+
+    fs, ids = make_session({"Kevin": [np.ones(512)]})
+    faces = [{"t": 1.0, "box": [0.04 * k, 0, 0.04 * k + 0.03, 0.1], "person": ids["Kevin"]} for k in range(MAX_MAPPINGS + 1)]
+    ok = _job(client, ready_video, fs, 1, 7, faces[:9])
+    assert ok.status_code == 200 and len(ok.json()["params"]["mappings"]) == 9
+    client.post(f"/api/jobs/{ok.json()['id']}/cancel")
+    r = _job(client, ready_video, fs, 1, 7, faces)
+    assert r.status_code == 422 and "au maximum" in r.json()["detail"]
+
+
 def test_person_removed_from_video_is_refused(client, ready_video, make_session):
     fs, ids = make_session({"Kevin": [np.ones(512)]})
     client.delete(f"/api/faces/{fs}/people/{ids['Kevin']}")

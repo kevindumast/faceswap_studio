@@ -52,7 +52,9 @@ export type Photo = { id: string; name: string; crop_url: string; photo_url: str
 export type Person = { id: string; name: string; count: number; cover_url: string | null; photos: Photo[]; created_at?: number; updated_at?: number };
 export type RejectedPhoto = { id: string; name: string; photo_url: string };
 /** Résultat de l'import d'une photo : reconnue dans une personne existante, nouvelle personne, ou pas de visage. */
-export type ImportResult = { ok: boolean; name: string; person_id?: string; person_name?: string; created?: boolean };
+export type ImportResult = { ok: boolean; name: string; person_id?: string; person_name?: string; created?: boolean; pending_id?: string };
+/** Photo importée dans la bibliothèque sans visage auto-détecté : en attente d'un rattachement manuel. */
+export type PendingPhoto = { id: string; name: string; added_at: number; photo_url: string; full_url: string };
 /** Session d'une vidéo : les personnes de la bibliothèque choisies pour ce rendu. */
 export type FaceSet = { id: string; persons: Person[]; rejected: RejectedPhoto[]; ok_count: number; legacy?: boolean; imported?: ImportResult[] };
 
@@ -117,6 +119,7 @@ export type Job = {
   warnings: string[];
   preview_url: string;
   result_url: string | null;
+  partial_url: string | null; // en pause : ce qui est déjà rendu
   before_url: string | null;
   created_at: number;
 };
@@ -272,6 +275,10 @@ export const api = {
     form.append("consent", "true");
     return upload<{ imported: ImportResult[]; people: Person[] }>("/api/people/photos", form);
   },
+  pendingPhotos: () => request<PendingPhoto[]>("GET", "/api/people/photos/pending"),
+  deletePending: (rid: string) => request<{ ok: boolean }>("DELETE", `/api/people/photos/pending/${rid}`),
+  assignPending: (rid: string, target: string, name?: string) =>
+    request<Person>("POST", `/api/people/photos/pending/${rid}/assign`, { target, name }),
 
   // Moteur : Space ZeroGPU (le jeton et la clé ne reviennent jamais au navigateur)
   settings: () => request<{ zerogpu: ZeroGPUSettings }>("GET", "/api/settings"),

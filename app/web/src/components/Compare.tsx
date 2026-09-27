@@ -1,10 +1,10 @@
-import { Maximize2, Minimize2, Pause, Play, Volume2, VolumeX } from "lucide-react";
+import { Loader2, Maximize2, Minimize2, Pause, Play, Volume2, VolumeX } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { clamp, timecode } from "../lib/time";
 import { Button } from "./ui";
 
 /** Lecteur avant / après : deux vidéos synchronisées, un rideau déplaçable. */
-export function Compare({ before, after, aspect, fps }: { before: string; after: string; aspect: string; fps: number }) {
+export function Compare({ before, after, aspect, fps, autoPlay = false }: { before: string; after: string; aspect: string; fps: number; autoPlay?: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   const wrapper = useRef<HTMLDivElement>(null);
   const [fullscreen, setFullscreen] = useState(false);
@@ -25,6 +25,7 @@ export function Compare({ before, after, aspect, fps }: { before: string; after:
   const [t, setT] = useState(0);
   const [dur, setDur] = useState(0);
   const [muted, setMuted] = useState(false);
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const dragging = useRef(false);
 
   const sync = useCallback(() => {
@@ -49,8 +50,9 @@ export function Compare({ before, after, aspect, fps }: { before: string; after:
     if (!a.current || !b.current) return;
     if (a.current.paused) {
       sync();
-      void a.current.play();
-      void b.current.play();
+      // Lecture refusée par le navigateur (autoplay) : on reste simplement en pause.
+      a.current.play().catch(() => b.current?.pause());
+      b.current.play().catch(() => {});
     } else {
       a.current.pause();
       b.current.pause();
@@ -91,6 +93,11 @@ export function Compare({ before, after, aspect, fps }: { before: string; after:
           playsInline
           preload="auto"
           onLoadedMetadata={() => setDur(a.current?.duration ?? 0)}
+          onLoadedData={() => {
+            setState("ready");
+            if (autoPlay) toggle();
+          }}
+          onError={() => setState("error")}
           onPlay={() => setPlaying(true)}
           onPause={() => {
             setPlaying(false);
@@ -106,6 +113,11 @@ export function Compare({ before, after, aspect, fps }: { before: string; after:
             <span className="h-3.5 w-[2px] rounded-full bg-accent-ink/70" />
           </div>
         </div>
+        {state !== "ready" && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/40 text-sm text-muted">
+            {state === "loading" ? <Loader2 className="size-6 animate-spin" /> : "Vidéo illisible : recharge la page."}
+          </div>
+        )}
         <span className="pointer-events-none absolute top-3 left-3 rounded-full bg-black/60 px-2.5 py-1 text-[11px] font-medium backdrop-blur-md">Avant</span>
         <span className="pointer-events-none absolute top-3 right-3 rounded-full bg-accent px-2.5 py-1 text-[11px] font-semibold text-accent-ink">Après</span>
       </div>

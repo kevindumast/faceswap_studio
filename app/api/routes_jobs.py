@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import threading
 from fractions import Fraction
 import time
 from typing import Literal
@@ -16,6 +17,7 @@ from src import media
 from src.config import load_config
 
 from src.levels import CHARACTER, FACE, FACE_TONE, models_ready
+from src.pipeline import Checkpoint, partial_preview
 
 from .common import get_or_404, not_found
 from .routes_faces import person_ids
@@ -51,6 +53,10 @@ class Mapping(Target):
     person: str
 
 
+# Garde-fou : une même personne peut remplacer plusieurs visages (acteur vu sous plusieurs angles).
+MAX_MAPPINGS = 24
+
+
 class JobIn(BaseModel):
     video_id: str
     face_set_id: str
@@ -59,7 +65,7 @@ class JobIn(BaseModel):
     output: Literal["segment", "full"] = "segment"
     stabilize: bool = True
     ai_label: bool = True
-    mappings: list[Mapping] = Field(default_factory=list, max_length=8)
+    mappings: list[Mapping] = Field(default_factory=list)
     target: Target | None = None  # ancien format : un seul visage, toutes les photos
     level: Literal["face", "face_tone", "head", "character"] = "face"
     use_gpu: bool = False         # jamais implicite : CPU sauf case cochée par l'utilisateur
@@ -102,10 +108,12 @@ def public(job: dict) -> dict:
     params.setdefault("level", FACE)
     params.setdefault("use_gpu", False)
     video = db.get("videos", job["video_id"])
-    if params["output"] == "full" and video:
+    # En pause : images déjà rendues (point de reprise), qu'on peut revoir avant de reprendre.
+    partial = Checkpoint.load(db.folder("jobs", job["id"])).frames_done if job["status"] == "paused" else 0
+    if done and params["output"] == "full" and video:
         before = f"/api/videos/{job['video_id']}/proxy.mp4"
     else:
-        before = f"{base}/before.mp4"
+        before = f"{base}/before.mp4"   # aperçu en pause : seul le passage est comparé, même en « vidéo complète »
     return {
         "id": job["id"],
         "video_id": job["video_id"],
@@ -125,7 +133,8 @@ def public(job: dict) -> dict:
         "warnings": job["warnings"] or [],
         "preview_url": f"{base}/preview.jpg",
         "result_url": f"{base}/result.mp4" if done else None,
-        "before_url": before if done else None,
+        "partial_url": f"{base}/partial.mp4?v={partial}" if partial else None,
+        "before_url": before if done or partial else None,
         "created_at": job["created_at"],
     }
 
@@ -151,6 +160,9 @@ def create_job(body: JobIn) -> dict:
         raise HTTPException(422, "Le passage dépasse la durée de la vidéo.")
     if length < seg.min_s - 0.01 or length > seg.max_s + 0.01:
         raise HTTPException(422, f"Le passage doit durer entre {seg.min_s} et {seg.max_s} s.")
+    if len(body.mappings) > MAX_MAPPINGS:
+        raise HTTPException(422, f"{len(body.mappings)} visages à remplacer : {MAX_MAPPINGS} au maximum par rendu. "
+                                 "Passe les moins présents sur « Ne pas remplacer ».")
     known = person_ids(body.face_set_id)
     unknown = {m.person for m in body.mappings} - known
     if unknown:
@@ -227,6 +239,22 @@ def _file(job_id: str, name: str, media_type: str, download_name: str | None = N
 @router.get("/{job_id}/preview.jpg")
 def preview(job_id: str) -> FileResponse:
     return _file(job_id, "preview.jpg", "image/jpeg")
+
+
+_partial_lock = threading.Lock()     # deux requêtes du lecteur vidéo ne fabriquent pas l'aperçu en même temps
+
+
+@router.get("/{job_id}/partial.mp4")
+def partial(job_id: str) -> FileResponse:
+    """Ce qui est déjà rendu d'un rendu en pause, pour juger le résultat avant de reprendre (ou d'annuler)."""
+    job = get_or_404("jobs", job_id, "Rendu")
+    if job["status"] != "paused":
+        raise HTTPException(409, "Aperçu disponible seulement quand le rendu est en pause.")
+    with _partial_lock:
+        path = partial_preview(db.folder("jobs", job_id))
+    if path is None:
+        raise not_found("Aperçu")
+    return FileResponse(path, media_type="video/mp4")
 
 
 @router.get("/{job_id}/before.mp4")

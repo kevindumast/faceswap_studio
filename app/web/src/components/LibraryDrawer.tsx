@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
-import { BookUser, Check, ChevronDown, ImagePlus, Loader2, Pencil, Search, ShieldCheck, Trash2, X } from "lucide-react";
+import { AlertTriangle, BookUser, Check, ChevronDown, ImagePlus, Loader2, Pencil, Search, ShieldCheck, Trash2, UserPlus, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, type ImportResult, type Person } from "../lib/api";
+import { api, type ImportResult, type PendingPhoto, type Person } from "../lib/api";
 import { Button, Notice, cx } from "./ui";
 
 /** Bibliothèque de personnes : toutes les têtes importées, nommées, réutilisables dans chaque vidéo. */
@@ -14,21 +14,32 @@ export function LibraryDrawer({ open, onClose }: { open: boolean; onClose: () =>
   const [lastImport, setLastImport] = useState<ImportResult[] | null>(null);
   const input = useRef<HTMLInputElement>(null);
   const { data, isLoading } = useQuery({ queryKey: ["people", q], queryFn: () => api.people(q), enabled: open });
+  const { data: pending } = useQuery({ queryKey: ["people-pending"], queryFn: api.pendingPhotos, enabled: open });
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["people"] });
     qc.invalidateQueries({ queryKey: ["faceset"] });
   };
+  const refreshPending = () => qc.invalidateQueries({ queryKey: ["people-pending"] });
   const importPhotos = useMutation({
     mutationFn: (files: File[]) => api.importToLibrary(files),
     onSuccess: (r) => {
       setLastImport(r.imported);
       refresh();
+      refreshPending();
     },
   });
   const rename = useMutation({ mutationFn: ({ pid, name }: { pid: string; name: string }) => api.renamePerson(pid, name), onSuccess: refresh });
   const deletePerson = useMutation({ mutationFn: api.deletePerson, onSuccess: refresh });
   const deletePhoto = useMutation({ mutationFn: ({ pid, photo }: { pid: string; photo: string }) => api.deletePhoto(pid, photo), onSuccess: refresh });
+  const deletePending = useMutation({ mutationFn: (rid: string) => api.deletePending(rid), onSuccess: refreshPending });
+  const namePending = useMutation({
+    mutationFn: ({ rid, name }: { rid: string; name: string }) => api.assignPending(rid, "new", name),
+    onSuccess: () => {
+      refresh();
+      refreshPending();
+    },
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -38,7 +49,7 @@ export function LibraryDrawer({ open, onClose }: { open: boolean; onClose: () =>
   }, [open, onClose]);
 
   const people = data ?? [];
-  const error = importPhotos.error ?? rename.error ?? deletePerson.error ?? deletePhoto.error;
+  const error = importPhotos.error ?? rename.error ?? deletePerson.error ?? deletePhoto.error ?? namePending.error;
 
   return (
     <AnimatePresence>
@@ -115,6 +126,24 @@ export function LibraryDrawer({ open, onClose }: { open: boolean; onClose: () =>
             </div>
 
             <div className="flex-1 overflow-y-auto p-3">
+              {!!pending?.length && (
+                <div className="mb-3 rounded-xl bg-warn-soft/50 p-3 ring-1 ring-warn/20">
+                  <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium text-warn">
+                    <AlertTriangle className="size-3.5" /> Aucun visage détecté automatiquement
+                  </div>
+                  <ul className="space-y-2">
+                    {pending.map((ph) => (
+                      <PendingRow
+                        key={ph.id}
+                        photo={ph}
+                        loading={namePending.isPending && namePending.variables?.rid === ph.id}
+                        onName={(name) => namePending.mutate({ rid: ph.id, name })}
+                        onDelete={() => deletePending.mutate(ph.id)}
+                      />
+                    ))}
+                  </ul>
+                </div>
+              )}
               {isLoading && <Loader2 className="mx-auto mt-10 size-5 animate-spin text-muted" />}
               {data && !people.length && (
                 <p className="mt-10 px-6 text-center text-sm text-muted">
@@ -141,6 +170,50 @@ export function LibraryDrawer({ open, onClose }: { open: boolean; onClose: () =>
         </>
       )}
     </AnimatePresence>
+  );
+}
+
+/** Photo importée sans visage auto-détecté : on peut la retirer, ou la nommer pour en faire une personne. */
+function PendingRow(p: { photo: PendingPhoto; loading: boolean; onName: (name: string) => void; onDelete: () => void }) {
+  const [naming, setNaming] = useState(false);
+  const [name, setName] = useState("");
+  const submit = () => {
+    const clean = name.trim();
+    if (clean) p.onName(clean);
+  };
+  return (
+    <li className="flex items-center gap-2.5">
+      <img src={p.photo.photo_url} alt={p.photo.name} className="size-12 shrink-0 rounded-lg object-cover opacity-60 grayscale" />
+      {naming ? (
+        <form
+          className="flex flex-1 gap-1.5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            submit();
+          }}
+        >
+          <input
+            autoFocus
+            value={name}
+            maxLength={40}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={() => !name.trim() && setNaming(false)}
+            placeholder="Nom de la personne…"
+            className="h-8 min-w-0 flex-1 rounded-lg bg-bg px-2.5 text-[13px] ring-1 ring-accent outline-none"
+          />
+          <Button type="submit" size="sm" variant="primary" loading={p.loading} disabled={!name.trim()} icon={<Check className="size-3.5" />} />
+        </form>
+      ) : (
+        <>
+          <Button size="sm" variant="secondary" onClick={() => setNaming(true)} icon={<UserPlus className="size-3.5" />} className="flex-1">
+            Nommer
+          </Button>
+          <button onClick={p.onDelete} aria-label={`Retirer ${p.photo.name}`} className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-danger-soft hover:text-danger">
+            <X className="size-3.5" />
+          </button>
+        </>
+      )}
+    </li>
   );
 }
 

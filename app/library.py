@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 
 from app import db
-from src.identity import SourceFace, analyze_photo, average_embedding
+from src.identity import SourceFace, analyze_photo, analyze_region, average_embedding, read_image_full
 from src.levels import FACE_TONE, PersonAssets
 
 # Similarité cosinus ArcFace : même personne ≈ 0,4–0,8 ; personnes différentes < 0,25.
@@ -154,7 +154,7 @@ def _write_images(d: Path, photo_id: str, img: np.ndarray, crop: np.ndarray, emb
 def import_photo(raw: Path, original_name: str) -> dict:
     """Analyse une photo et la range dans la bonne personne (reconnue ou nouvelle). Le fichier brut est consommé."""
     result = analyze_photo(raw)
-    img = cv2.imdecode(np.fromfile(str(raw), np.uint8), cv2.IMREAD_COLOR)
+    img = read_image_full(raw)
     if not result.ok or img is None:
         return {"ok": False, "name": original_name, "image": img}
     with _lock:
@@ -167,6 +167,87 @@ def import_photo(raw: Path, original_name: str) -> dict:
         _save(person)
     raw.unlink(missing_ok=True)
     return {"ok": True, "name": original_name, "person_id": person["id"], "person_name": person["name"], "created": created}
+
+
+def _pending_dir() -> Path:
+    d = root() / "_pending"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _pending_index() -> Path:
+    return root() / "_pending.json"
+
+
+def _load_pending() -> list[dict]:
+    p = _pending_index()
+    return json.loads(p.read_text(encoding="utf-8")) if p.is_file() else []
+
+
+def _save_pending(items: list[dict]) -> None:
+    root().mkdir(parents=True, exist_ok=True)
+    _pending_index().write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
+
+
+def add_pending(img: np.ndarray, name: str) -> dict:
+    """Garde une photo sans visage détecté automatiquement, pour un rattachement manuel ultérieur."""
+    with _lock:
+        rid = db.new_id()
+        d = _pending_dir()
+        scale = min(1.0, 480 / max(img.shape[:2]))
+        thumb = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1.0 else img
+        cv2.imwrite(str(d / f"{rid}.jpg"), thumb, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        cv2.imwrite(str(d / f"{rid}_full.jpg"), img, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        item = {"id": rid, "name": name, "added_at": time.time()}
+        items = _load_pending()
+        items.append(item)
+        _save_pending(items)
+        return item
+
+
+def all_pending() -> list[dict]:
+    return sorted(_load_pending(), key=lambda p: p.get("added_at", 0), reverse=True)
+
+
+def public_pending() -> list[dict]:
+    base = "/api/people/photos/pending"
+    return [{**p, "photo_url": f"{base}/{p['id']}/photo.jpg", "full_url": f"{base}/{p['id']}/full.jpg"} for p in all_pending()]
+
+
+def pending_file(rid: str, kind: str) -> Path | None:
+    if not rid.isalnum() or kind not in ("photo", "full"):
+        return None
+    path = _pending_dir() / (f"{rid}_full.jpg" if kind == "full" else f"{rid}.jpg")
+    return path if path.is_file() else None
+
+
+def delete_pending(rid: str) -> None:
+    with _lock:
+        items = [x for x in _load_pending() if x["id"] != rid]
+        _save_pending(items)
+        for f in _pending_dir().glob(f"{rid}*"):
+            f.unlink(missing_ok=True)
+
+
+def assign_pending(rid: str, box: tuple[float, float, float, float], target: str, name: str | None = None) -> dict:
+    """Rattache une photo en attente à une personne (existante ou nouvelle) via une zone de visage tracée à la main."""
+    items = _load_pending()
+    item = next((x for x in items if x["id"] == rid), None)
+    if item is None:
+        raise PersonNotFound(rid)
+    full = _pending_dir() / f"{rid}_full.jpg"
+    result = analyze_region(full, box)
+    if not result.ok:
+        raise ValueError("Aucun visage exploitable sur cette photo : essaie avec un cadre plus précis, centré sur le visage.")
+    img = read_image_full(full)
+    with _lock:
+        person = create(name) if target == "new" else load(target)
+        photo_id = db.new_id()
+        _write_images(_dir(person["id"]), photo_id, img, result.crop, result.embedding)
+        person["photos"].append({"id": photo_id, "name": item["name"], "added_at": time.time()})
+        _save(person)
+    delete_pending(rid)
+    return person
 
 
 def move_photo(pid: str, photo_id: str, target: str) -> str:

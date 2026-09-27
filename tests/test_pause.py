@@ -48,6 +48,36 @@ def test_pause_then_resume_gives_complete_video(sample_video, tmp_path):
     assert info.duration == pytest.approx(3.0, abs=0.05) and info.fps == pytest.approx(25)
 
 
+def test_partial_preview_while_paused(sample_video, tmp_path):
+    """En pause : ce qui est déjà rendu se revoit, avec le son d'origine, et disparaît une fois le rendu fini."""
+    from src import media
+    from src.identity import SourceFace
+    from src.levels import PersonAssets
+    from src.pipeline import Checkpoint, FaceMapping, Paused, partial_preview, swap_segment
+
+    assert partial_preview(tmp_path) is None                                    # rien de rendu : pas d'aperçu
+    clip = tmp_path / "cut.mp4"
+    media.cut_segment(sample_video, clip, 1.0, 4.0, (640, 360), True)           # 75 images, avec son
+    person = PersonAssets(source=SourceFace(np.ones(512, np.float32) / np.sqrt(512)))
+
+    def pause_at_20(stage, done, total):
+        if done >= 20:
+            raise Paused()
+
+    with pytest.raises(Paused):
+        swap_segment(clip, [FaceMapping(person)], "face", tmp_path / "swapped.mp4", progress=pause_at_20,
+                     checkpoint=Checkpoint.load(tmp_path))
+    preview = partial_preview(tmp_path)
+    assert preview.name == "partial_20.mp4" and count_frames(preview) == 20
+    info = media.probe(preview)
+    assert info.has_audio and info.duration == pytest.approx(0.8, abs=0.1)
+    built = preview.stat().st_mtime_ns
+    assert partial_preview(tmp_path).stat().st_mtime_ns == built                # pas refait à chaque requête du lecteur
+
+    Checkpoint.load(tmp_path).clear()
+    assert not list(tmp_path.glob("partial_*"))
+
+
 def test_crash_resumes_from_last_saved_chunk(sample_video, tmp_path, monkeypatch):
     """Arrêt brutal (PC éteint) : on repart du dernier morceau refermé, sans image en double ni manquante."""
     from src import media
@@ -108,7 +138,10 @@ def test_pause_resume_api(client, ready_video, make_session):
     assert job["pausable"] is True
     paused = client.post(f"/api/jobs/{job['id']}/pause").json()
     assert paused["status"] == "paused"
+    assert paused["partial_url"] is None                                         # mis en pause avant la 1re image
+    assert client.get(f"/api/jobs/{job['id']}/partial.mp4").status_code == 404
     assert client.post(f"/api/jobs/{job['id']}/resume").json()["status"] == "queued"
+    assert client.get(f"/api/jobs/{job['id']}/partial.mp4").status_code == 409    # seulement en pause
     assert client.post(f"/api/jobs/{job['id']}/resume").status_code == 409            # plus en pause
     client.post(f"/api/jobs/{job['id']}/pause")
     assert client.post(f"/api/jobs/{job['id']}/cancel").json()["status"] == "cancelled"
