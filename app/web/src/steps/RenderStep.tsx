@@ -10,6 +10,7 @@ import { Button, Card, Notice, ProgressBar, SectionTitle, SegmentedControl, Swit
 import { Compare } from "../components/Compare";
 import { openEngineSettings } from "../components/EngineSettings";
 import { chrono } from "../components/SpaceStatus";
+import { parseStage, type StageKey } from "../lib/stages";
 import type { Selection } from "../components/trimmer/Trimmer";
 import { PersonBadge } from "./FacesStep";
 
@@ -97,13 +98,15 @@ function Setup(p: Props) {
   // Le swap domine le temps de calcul : chaque visage remplacé en plus coûte ~75 % d'une passe.
   const swapFactor = 1 + 0.75 * Math.max(0, active.length - 1);
   const spf = p.status?.levels[p.level]?.sec_per_frame ?? p.status?.sec_per_frame ?? 2.2;
-  // Niveau 4 : son propre Space (Wan2.2-Animate), une seule personne, durée limitée, résolution au choix.
+  // Niveau 4 : son propre Space (Wan2.2-Animate), 1 ou 2 personnes (un passage chacune), durée limitée, résolution au choix.
   const isCharacter = p.level === "character";
   const character = p.status?.gpu.character;
   const [resolution, setResolution] = useState<Resolution>("360p");
   const maxCharacter = character?.max_s ?? 10;
   const tooLong = isCharacter && len > maxCharacter + 0.01;
-  const notOne = isCharacter && active.length !== 1;
+  const maxPeople = character?.max_people ?? 2;
+  const people = Math.max(1, active.length);
+  const badCount = isCharacter && active.length > maxPeople;
   const gpuConfigured = isCharacter ? !!character?.configured : !!p.status?.gpu.configured;
   const blockedByGpu = !!info.gpuOnly && !useGpu;
   // Mode « vidéo complète » : le reste du clip est seulement réencodé (≈ 4× plus vite que le temps réel).
@@ -112,7 +115,8 @@ function Setup(p: Props) {
   const gpuSpf = p.status?.gpu.sec_per_frame?.[p.level] ?? 0.1;
   const characterPerS = character?.gpu_s_per_second[resolution] ?? (resolution === "480p" ? 26 : 12);
   const characterSteps = character?.steps ?? 6;
-  const gpuSeconds = isCharacter ? characterGpuSeconds(len, characterPerS, characterSteps) : frames * gpuSpf * swapFactor;
+  // Niveau 4 : un passage GPU par personne remplacée, l'un après l'autre.
+  const gpuSeconds = isCharacter ? characterGpuSeconds(len, characterPerS, characterSteps) * people : frames * gpuSpf * swapFactor;
   const quotaLeft = (p.status?.gpu.free_quota_s ?? 300) - (p.status?.gpu.used_today_s ?? 0);
   const estimate = useGpu
     ? gpuSeconds + (isCharacter ? 90 : 60) + (output === "full" ? fullExtra : 0)
@@ -263,9 +267,15 @@ function Setup(p: Props) {
                   Le niveau 4 est limité à {seconds(maxCharacter)} (quota GPU) : raccourcis le passage ({seconds(len)} actuellement).
                 </Notice>
               )}
-              {notOne && (
+              {badCount && (
                 <Notice tone="warn" className="mt-3">
-                  Le niveau 4 remplace une seule personne à la fois : garde une seule association à l'étape Visages.
+                  Le niveau 4 remplace au plus {maxPeople} personnes par rendu : passe les autres sur « Ne pas remplacer » à l'étape Visages.
+                </Notice>
+              )}
+              {!badCount && active.length > 1 && (
+                <Notice tone="info" className="mt-3">
+                  {active.length} personnes = {active.length} passages sur le GPU, l'un après l'autre : environ {active.length}× plus de quota et de temps
+                  qu'une seule. Ton quota gratuit (5 min/jour) suffit pour 5 s en 360p.
                 </Notice>
               )}
             </div>
@@ -299,7 +309,8 @@ function Setup(p: Props) {
                 <div className="mt-0.5 font-mono text-[11px] text-faint tabular" title="Images du passage × secondes par image (mesurée sur ta machine) × visages remplacés">
                   {isCharacter ? (
                     <>
-                      {seconds(len)} × {Math.round(characterPerS)} s de GPU/s ({resolution}, {characterSteps} étapes) + ~1 min 30 d'envoi et de recollage
+                      {seconds(len)} × {Math.round(characterPerS)} s de GPU/s ({resolution}, {characterSteps} étapes)
+                      {people > 1 ? ` × ${people} personnes` : ""} + ~1 min 30 d'envoi et de recollage
                     </>
                   ) : (
                     <>
@@ -315,8 +326,8 @@ function Setup(p: Props) {
                 variant="primary"
                 size="lg"
                 loading={launch.isPending}
-                disabled={!active.length || blockedByGpu || tooLong || notOne}
-                title={blockedByGpu ? "Ce niveau nécessite l'option GPU" : tooLong ? "Passage trop long pour le niveau 4" : notOne ? "Une seule personne au niveau 4" : undefined}
+                disabled={!active.length || blockedByGpu || tooLong || badCount}
+                title={blockedByGpu ? "Ce niveau nécessite l'option GPU" : tooLong ? "Passage trop long pour le niveau 4" : badCount ? `${maxPeople} personnes au plus au niveau 4` : undefined}
                 onClick={() => launch.mutate()}
                 icon={<Wand2 className="size-4" />}
               >
@@ -445,21 +456,23 @@ function stagesOf(j: Job): Stage[] {
 function overall(j: Job): number {
   if (j.status === "queued") return 0;
   const frac = j.total ? j.done / j.total : 0;
-  switch (j.stage) {
+  const { key, pass, passes } = parseStage(j.stage);
+  const before = (pass - 1) / passes; // part déjà faite par les passages précédents (niveau 4, une personne chacun)
+  switch (key) {
     case "cut":
       return 0.03;
     case "wake":
-      return 0.04;
+      return pass > 1 ? 0.07 + 0.88 * before : 0.04;
     case "queue":
-      return 0.05;
+      return pass > 1 ? 0.07 + 0.88 * before : 0.05;
     case "gpu":
-      return 0.06;
+      return pass > 1 ? 0.07 + 0.88 * before : 0.06;
     case "swap":
       return j.params.use_gpu ? 0.07 + 0.88 * frac : 0.05 + 0.9 * frac;
     case "pose":
     case "mask":
     case "generate":
-      return 0.07 + 0.88 * frac; // progression unique du Space niveau 4, en ‰
+      return 0.07 + 0.88 * (before + frac / passes); // progression du Space niveau 4, en ‰
     case "assemble":
       return 0.97;
     default:
@@ -481,7 +494,7 @@ function useStageClock(stage: Job["stage"]): number {
 
 /** Détail affiché à droite de l'étape active. */
 function stageDetail(j: Job, inStage: number): string | null {
-  switch (j.stage) {
+  switch (parseStage(j.stage).key) {
     case "wake":
       return `${chrono(j.done + inStage)} / ≈ ${duration(j.total)}`;
     case "queue":
@@ -499,7 +512,7 @@ function stageDetail(j: Job, inStage: number): string | null {
   }
 }
 
-const REMOTE_HINT: Partial<Record<NonNullable<Job["stage"]>, string>> = {
+const REMOTE_HINT: Partial<Record<StageKey, string>> = {
   wake: "Le Space dormait : il recharge son modèle (≈ 3 min, ou 20 à 40 min pour le niveau 4). Aucun quota consommé pendant l'attente.",
   queue: "Ton rendu attend son tour sur ton Space.",
   gpu: "Le calcul est lancé : ZeroGPU attribue un GPU (file partagée avec les autres utilisateurs de Hugging Face).",
@@ -591,11 +604,13 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
   const pause = useMutation({ mutationFn: () => api.pauseJob(job.id), onSuccess: (j) => qc.setQueryData(["job", j.id], j) });
   const frac = overall(job);
   const stages = stagesOf(job);
-  const stageIdx = stages.findIndex((s) => s.key === job.stage);
+  const { key: stageKey, pass, passes } = parseStage(job.stage);
+  const stageIdx = stages.findIndex((s) => s.key === stageKey);
+  const passLabel = passes > 1 ? `personne ${pass}/${passes}` : null;
   const queued = job.status === "queued";
   const remote = job.params.use_gpu;
   // Aperçu en direct seulement pour un rendu sur ce PC (le Space ne renvoie que le résultat final).
-  const hasPreview = !remote && (job.stage === "swap" || job.stage === "assemble");
+  const hasPreview = !remote && (stageKey === "swap" || stageKey === "assemble");
   const inStage = useStageClock(job.stage);
   const info = video.info!;
 
@@ -603,7 +618,15 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
     <div>
       <SectionTitle
         eyebrow="Étape 4 · Rendu"
-        title={queued ? "En file d'attente…" : job.status === "cancelling" ? "Annulation…" : job.status === "pausing" ? "Mise en pause…" : "Rendu en cours"}
+        title={
+          queued
+            ? "En file d'attente…"
+            : job.status === "cancelling"
+              ? "Annulation…"
+              : job.status === "pausing"
+                ? "Mise en pause…"
+                : `Rendu en cours${passLabel ? ` · ${passLabel}` : ""}`
+        }
         subtitle={
           queued && !worker
             ? "Le worker n'est pas lancé : démarre scripts\\dev.ps1 pour que le rendu commence."
@@ -637,12 +660,13 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
           {hasPreview && <img src={`${job.preview_url}?v=${job.done}`} alt="Dernière image calculée" className="absolute inset-0 size-full object-contain" />}
           {!hasPreview && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center text-muted">
-              {remote && !queued && job.stage !== "cut" ? <Zap className="size-8 animate-pulse text-warn" /> : <Clapperboard className="size-8 animate-pulse" />}
+              {remote && !queued && stageKey !== "cut" ? <Zap className="size-8 animate-pulse text-warn" /> : <Clapperboard className="size-8 animate-pulse" />}
               <span className="text-sm text-fg">
-                {queued ? "En attente du worker" : stageIdx >= 0 && job.stage !== "cut" ? stages[stageIdx].label : "Préparation de l'extrait"}
+                {queued ? "En attente du worker" : stageIdx >= 0 && stageKey !== "cut" ? stages[stageIdx].label : "Préparation de l'extrait"}
+                {!queued && passLabel && stageKey !== "cut" && stageKey !== "assemble" ? ` · ${passLabel}` : ""}
                 {!queued && stageDetail(job, inStage) ? <span className="ml-2 font-mono text-muted tabular">{stageDetail(job, inStage)}</span> : null}
               </span>
-              {remote && !queued && job.stage && REMOTE_HINT[job.stage] && <span className="max-w-md text-[13px]">{REMOTE_HINT[job.stage]}</span>}
+              {remote && !queued && stageKey && REMOTE_HINT[stageKey] && <span className="max-w-md text-[13px]">{REMOTE_HINT[stageKey]}</span>}
             </div>
           )}
           {hasPreview && (

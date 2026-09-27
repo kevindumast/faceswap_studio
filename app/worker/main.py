@@ -92,58 +92,86 @@ def run_remote(job: dict, source: Path, opts: RenderOptions, mappings: list[Face
     return stats
 
 
-def run_character(job: dict, source: Path, opts: RenderOptions, mapping: FaceMapping, out: Path, progress) -> RenderStats:
-    """Niveau 4 : découpe et assemblage sur le PC, personne entière générée sur le Space « niveau 4 »."""
+def _reference_warning(name: str, framing: str) -> str | None:
+    if framing == "portrait":
+        return (f"{name} : pas de photo en pied, le corps et les habits ont été inventés. "
+                "Ajoute une photo en pied dans la bibliothèque pour un meilleur résultat.")
+    if framing == "half":
+        return (f"{name} : photo à mi-corps seulement, le bas du corps (pantalon, chaussures) a été inventé. "
+                "Une photo en pied, de la tête aux pieds, donne un meilleur résultat.")
+    return None
+
+
+def run_character(job: dict, source: Path, opts: RenderOptions, mappings: list[FaceMapping], out: Path,
+                  progress) -> RenderStats:
+    """Niveau 4 : découpe et assemblage sur le PC, personnes entières générées sur le Space « niveau 4 ».
+
+    Wan-Animate remplace une personne par passage : avec deux personnes, le 2e passage part de la vidéo où la 1re est
+    déjà remplacée (recollée en pleine résolution entre les deux). Chaque passage consomme son propre temps de GPU.
+    Plusieurs personnes : masque qui suit la silhouette (grille) plutôt qu'un rectangle, pour ne pas abîmer la voisine.
+    """
     params = job["params"]
     ccfg = load_config().levels.character
+    rcfg = load_config().render
     stats = RenderStats()
     t0 = time.perf_counter()
     progress("cut", 0, 1)
     segment = cut(source, opts, out)
-    silent = out / "cut_silent.mp4"          # le son ne part pas : il est remis à l'assemblage
-    media.ffmpeg("-i", str(segment.path), "-an", "-c:v", "copy", str(silent))
-    reference = choose_reference(mapping.person.photos)
-    if reference.framing == "portrait":
-        stats.warnings.append("Pas de photo en pied pour cette personne : le corps et les habits ont été inventés. "
-                              "Ajoute une photo en pied dans la bibliothèque pour un meilleur résultat.")
-    elif reference.framing == "half":
-        stats.warnings.append("Photo à mi-corps seulement : le bas du corps (pantalon, chaussures) a été inventé. "
-                              "Une photo en pied, de la tête aux pieds, donne un meilleur résultat.")
+    current = out / "cut_silent.mp4"          # le son ne part pas : il est remis à l'assemblage
+    media.ffmpeg("-i", str(segment.path), "-an", "-c:v", "copy", str(current))
+    references = [choose_reference(m.person.photos) for m in mappings]
+    for i, ref in enumerate(references):
+        warning = _reference_warning(f"Personne {i + 1}" if len(mappings) > 1 else "Cette personne", ref.framing)
+        if warning:
+            stats.warnings.append(warning)
     progress("cut", 1, 1)
 
-    local = relative_targets([mapping], opts.start, opts.end - opts.start)[0]
-    payload = {"t": local.target["t"], "box": local.target["box"], "resolution": params.get("resolution", "360p"),
-               "steps": int(ccfg.get("steps", 6)), "seed": 42}
-    generated, mask = out / "generated.mp4", out / "generated_mask.mp4"
-    try:
-        wake_space("character", job["id"], progress)
-        client = ZeroGPUClient.from_settings("character")
-        remote = client.replace(silent, reference.path, payload, generated, mask,
-                                should_cancel=lambda: db.job_status(job["id"]) == "cancelling",
-                                on_stage=remote_stages(progress, CHARACTER_STEPS))
-    except RemoteCancelled as exc:
-        raise Cancelled() from exc
-    silent.unlink(missing_ok=True)
-    gpu_seconds = float(remote.get("gpu_seconds", 0))
-    today = time.strftime("%Y-%m-%d")
-    db.set_meta(f"zerogpu_used:{today}", str(float(db.get_meta(f"zerogpu_used:{today}") or 0) + gpu_seconds))
-    stats.warnings += list(remote.get("warnings", []))
+    count = len(mappings)
+    grid = [1, 1] if count == 1 else list(ccfg.get("mask_grid_multi", [4, 8]))
+    local = relative_targets(mappings, opts.start, opts.end - opts.start)
+    resolution, steps = params.get("resolution", "360p"), int(ccfg.get("steps", 6))
+    gpu_seconds = 0.0
+    for k, (mapping, reference) in enumerate(zip(local, references), start=1):
+        # Étapes d'un passage : « generate@2/2 » = 2e personne sur 2 (rien d'ajouté s'il n'y en a qu'une).
+        step = progress if count == 1 else (lambda stage, done, total, k=k: progress(f"{stage}@{k}/{count}", done, total))
+        payload = {"t": mapping.target["t"], "box": mapping.target["box"], "resolution": resolution, "steps": steps,
+                   "seed": 42, "mask_grid": grid}
+        generated, mask = out / f"generated_{k}.mp4", out / f"generated_mask_{k}.mp4"
+        try:
+            wake_space("character", job["id"], step)
+            client = ZeroGPUClient.from_settings("character")
+            remote = client.replace(current, reference.path, payload, generated, mask,
+                                    should_cancel=lambda: db.job_status(job["id"]) == "cancelling",
+                                    on_stage=remote_stages(step, CHARACTER_STEPS))
+        except RemoteCancelled as exc:
+            raise Cancelled() from exc
+        used = float(remote.get("gpu_seconds", 0))
+        gpu_seconds += used
+        today = time.strftime("%Y-%m-%d")
+        db.set_meta(f"zerogpu_used:{today}", str(float(db.get_meta(f"zerogpu_used:{today}") or 0) + used))
+        prefix = f"Personne {k} : " if count > 1 else ""
+        stats.warnings += [prefix + w for w in remote.get("warnings", [])]
+
+        # Recollage en pleine résolution : sortie finale, ou point de départ du passage suivant (qualité élevée).
+        last = k == count
+        target = out / "swapped.mp4" if last else out / f"pass_{k}.mp4"
+        stats.frames = recompose(generated, mask, current, target, segment.fps_str,
+                                 int(rcfg.crf) if last else 12, str(rcfg.preset), float(ccfg.get("feather", 0.015)))
+        for f in (generated, mask, current):
+            f.unlink(missing_ok=True)
+        current = target
 
     progress("assemble", 0, 1)
-    rcfg = load_config().render
-    stats.frames = recompose(generated, mask, segment.path, out / "swapped.mp4", segment.fps_str, int(rcfg.crf),
-                             str(rcfg.preset), float(ccfg.get("feather", 0.015)))
     stats.swapped = stats.frames
     assemble(source, segment, out / "swapped.mp4", opts, out / "result.mp4", out)
-    for f in (generated, mask):
-        f.unlink(missing_ok=True)
     progress("assemble", 1, 1)
     stats.seconds = time.perf_counter() - t0
     stats.sec_per_frame = stats.seconds / max(1, stats.frames)
     stats.sec_per_computed = gpu_seconds / max(1, stats.frames)
-    # Temps GPU réel par seconde d'extrait, ramené à 6 étapes : recale l'estimation affichée avant le rendu.
+    # Temps GPU réel par seconde d'extrait et par personne, ramené à 6 étapes : recale l'estimation avant rendu.
     length = max(0.1, opts.end - opts.start)
-    db.set_meta(f"character_gpu_s:{payload['resolution']}", str(max(1.0, (gpu_seconds - 45) / length * 6 / payload["steps"])))
+    per_pass = gpu_seconds / count
+    db.set_meta(f"character_gpu_s:{resolution}", str(max(1.0, (per_pass - 45) / length * 6 / steps)))
     return stats
 
 
@@ -186,7 +214,7 @@ def run_job(job: dict) -> None:
 
     if level == CHARACTER:
         # Niveau 4 : uniquement sur le Space « niveau 4 » (la case GPU est obligatoire, vérifiée à la création).
-        stats, engine = run_character(job, Path(video["source"]), opts, mappings[0], out, progress), "zerogpu"
+        stats, engine = run_character(job, Path(video["source"]), opts, mappings, out, progress), "zerogpu"
     elif params.get("use_gpu"):
         # Case « Utiliser le GPU » cochée pour CE rendu : calcul sur le Space ZeroGPU, jamais de repli sur le CPU.
         stats, engine = run_remote(job, Path(video["source"]), opts, mappings, out, progress), "zerogpu"

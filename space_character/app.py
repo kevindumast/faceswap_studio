@@ -320,6 +320,9 @@ def replace(clip: str, ref: str, payload: str, key: str, progress=gr.Progress())
     if resolution not in RESOLUTIONS:
         raise gr.Error(f"Résolution inconnue : {resolution}")
     steps, seed = int(data.get("steps", 6)), int(data.get("seed", 42))
+    # Zone régénérée : rectangle autour de la personne (1×1, officiel) ou grille qui suit sa silhouette (plusieurs
+    # personnes à l'écran : ne pas empiéter sur la voisine, déjà remplacée ou à garder).
+    w_len, h_len = (int(v) for v in (data.get("mask_grid") or [1, 1]))
     work = Path(tempfile.mkdtemp())
 
     frames = read_frames(clip, resolution)
@@ -359,7 +362,10 @@ def replace(clip: str, ref: str, payload: str, key: str, progress=gr.Progress())
     for frame, mask in zip(frames, masks):
         _, body = get_mask_body_img(frame, mask, iterations=3, k=7)
         if body.any():  # silhouette vide sur cette image : on garde la zone précédente
-            aug = get_aug_mask(body, w_len=1, h_len=1)   # rectangle autour de la personne : zone régénérée
+            try:
+                aug = get_aug_mask(body.copy(), w_len=w_len, h_len=h_len)
+            except ValueError:   # personne trop petite pour la grille : rectangle
+                aug = get_aug_mask(body, w_len=1, h_len=1)
         backgrounds.append(frame * (1 - aug[:, :, None]))
         aug_masks.append(aug)
     for name, seq in (("src_face", faces), ("src_pose", poses), ("src_bg", backgrounds),

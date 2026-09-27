@@ -1,3 +1,4 @@
+import type { StageKey } from "./stages";
 // Client de l'API FastAPI (même origine : proxy Vite en dev, FastAPI sert le build en prod).
 
 export type VideoInfo = {
@@ -113,7 +114,8 @@ export type Job = {
   /** false pour ZeroGPU : le Space calcule tout l'extrait d'un coup. */
   pausable: boolean;
   /** Rendu distant : wake (secondes écoulées / durée typique), queue (rang / taille), gpu, puis étapes du Space. */
-  stage: "cut" | "wake" | "queue" | "gpu" | "swap" | "pose" | "mask" | "generate" | "assemble" | null;
+  /** Niveau 4 à plusieurs personnes : suffixe « @passage/passages » (ex. « generate@2/2 », voir lib/stages). */
+  stage: StageKey | `${StageKey}@${number}/${number}` | null;
   done: number;
   total: number;
   elapsed: number | null;
@@ -151,7 +153,15 @@ export type Status = {
     free_quota_s: number;
     sec_per_frame: Partial<Record<Level, number>>;
     /** Niveau 4 : Space dédié (Wan2.2-Animate) et de quoi estimer son temps de GPU. */
-    character: { configured: boolean; space: string | null; max_s: number; steps: number; gpu_s_per_second: Record<Resolution, number> };
+    character: {
+      configured: boolean;
+      space: string | null;
+      max_s: number;
+      steps: number;
+      gpu_s_per_second: Record<Resolution, number>;
+      /** Personnes remplaçables par rendu : un passage GPU chacune. */
+      max_people: number;
+    };
   };
   example_url: string;
   youtube_max_duration_s: number;

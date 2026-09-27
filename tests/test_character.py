@@ -162,7 +162,7 @@ def test_settings_store_the_level4_space(client):
 def test_level4_rules(client, ready_video, make_session, monkeypatch):
     from src.config import load_config
 
-    set_id, ids = make_session({"Kevin": [np.ones(512)], "Pote": [-np.ones(512)]})
+    set_id, ids = make_session({"Kevin": [np.ones(512)], "Pote": [-np.ones(512)], "Tiers": [np.eye(512)[0]]})
     one = _body(ready_video, set_id, [ids["Kevin"]], use_gpu=True, resolution="480p")
     r = client.post("/api/jobs", json={**one, "use_gpu": False})
     assert r.status_code == 422 and "option GPU" in r.json()["detail"]
@@ -171,8 +171,11 @@ def test_level4_rules(client, ready_video, make_session, monkeypatch):
 
     client.put("/api/settings/zerogpu", json={"space": "kevin/faceswap-gpu", "token": "hf_x", "key": "k",
                                               "character_space": "kevin/faceswap-character"})
-    r = client.post("/api/jobs", json=_body(ready_video, set_id, [ids["Kevin"], ids["Pote"]], use_gpu=True))
-    assert r.status_code == 422 and "une seule personne" in r.json()["detail"]
+    r = client.post("/api/jobs", json=_body(ready_video, set_id, [ids["Kevin"], ids["Pote"], ids["Tiers"]], use_gpu=True))
+    assert r.status_code == 422 and "1 à 2 personnes" in r.json()["detail"]
+    two = client.post("/api/jobs", json=_body(ready_video, set_id, [ids["Kevin"], ids["Pote"]], use_gpu=True))
+    assert two.status_code == 200                                                  # 2 personnes : 2 passages
+    client.post(f"/api/jobs/{two.json()['id']}/cancel")
     monkeypatch.setitem(load_config()["levels"]["character"], "max_s", 5.5)
     r = client.post("/api/jobs", json=one)
     assert r.status_code == 422 and "limité à 5.5 s" in r.json()["detail"]
@@ -258,9 +261,10 @@ def test_worker_level4_end_to_end_with_fake_space(sample_video, tmp_path, monkey
     job = {"id": "test", "params": {"resolution": "360p"}}
     out = tmp_path / "job"
     progress = []
-    stats = worker.run_character(job, sample_video, opts, mapping, out, lambda *a: progress.append(a))
+    stats = worker.run_character(job, sample_video, opts, [mapping], out, lambda *a: progress.append(a))
 
     assert sent["payload"]["t"] == pytest.approx(2.0) and sent["payload"]["resolution"] == "360p"
+    assert sent["payload"]["mask_grid"] == [1, 1]                                  # seul : rectangle officiel
     assert not sent["clip"].has_audio and sent["reference"] == photo
     result = media.probe(out / "result.mp4")
     assert result.duration == pytest.approx(6.0, abs=0.1) and result.has_audio and (result.width, result.fps) == (640, 25)
@@ -268,7 +272,53 @@ def test_worker_level4_end_to_end_with_fake_space(sample_video, tmp_path, monkey
     assert woken == ["character"]
     stages = [a for a in progress if a[0] in ("wake", "queue", "gpu", "generate")]
     assert stages == [("wake", 12, 1800), ("queue", 1, 2), ("gpu", 0, 0), ("generate", 500, 1000)]
-    assert not (out / "generated.mp4").exists()
+    assert not list(out.glob("generated*.mp4")) and not (out / "cut_silent.mp4").exists()
+
+
+def test_worker_level4_two_people_in_two_passes(sample_video, tmp_path, monkeypatch):
+    """2e passage sur la vidéo où la 1re personne est déjà remplacée ; masque en grille ; étapes « @k/2 »."""
+    import cv2
+
+    from app.worker import main as worker
+    from src.character import Reference
+    from src.identity import SourceFace
+    from src.levels import PersonAssets
+    from src.pipeline import FaceMapping, RenderOptions
+
+    calls = []
+
+    class FakeSpace:
+        def replace(self, clip, reference, payload, out, mask_out, on_progress=None, should_cancel=None, on_stage=None):
+            cap = cv2.VideoCapture(str(clip))
+            _, first = cap.read()
+            cap.release()
+            calls.append({"payload": payload, "reference": reference.name, "right_red": first[:, 400:, 2].mean() > 200})
+            on_stage("progress", 1000, 1000, "génération")
+            _solid(out, (0, 0, 255), (320, 176), "30", 6.0)                        # rouge sur la moitié droite
+            _solid(mask_out, (255, 255, 255), (320, 176), "30", 6.0, right_half=True)
+            return {"frames": 180, "gpu_seconds": 100.0, "warnings": []}
+
+    monkeypatch.setattr(worker.ZeroGPUClient, "from_settings", classmethod(lambda cls, kind="faces": FakeSpace()))
+    monkeypatch.setattr(worker, "wait_until_ready", lambda kind, on_wait, should_cancel=None, poll=10.0: None)
+    monkeypatch.setattr(worker, "choose_reference", lambda photos: Reference(photos[0], 0.1))
+    mappings = []
+    for i, name in enumerate(("moi.jpg", "aurel.jpg")):
+        photo = tmp_path / name
+        photo.write_bytes(b"jpg")
+        person = PersonAssets(source=SourceFace(np.ones(512, np.float32) / np.sqrt(512)), photos=[photo])
+        mappings.append(FaceMapping(person, target={"t": 3.0, "box": [0.1 + 0.5 * i, 0.1, 0.3 + 0.5 * i, 0.4]}, label=name))
+    opts = RenderOptions(start=1.0, end=7.0, output="segment", stabilize=True, ai_label=False, level="character")
+    progress = []
+    stats = worker.run_character({"id": "t2", "params": {"resolution": "360p"}}, sample_video, opts, mappings,
+                                 tmp_path / "job", lambda *a: progress.append(a))
+
+    assert [c["reference"] for c in calls] == ["moi.jpg", "aurel.jpg"]
+    assert not calls[0]["right_red"] and calls[1]["right_red"]      # le 2e passage voit la 1re personne remplacée
+    assert all(c["payload"]["mask_grid"] == [4, 8] for c in calls)  # plusieurs personnes : masque qui suit la silhouette
+    assert calls[1]["payload"]["box"][0] == pytest.approx(0.6)
+    assert [a for a in progress if a[0].startswith("generate")] == [("generate@1/2", 1000, 1000), ("generate@2/2", 1000, 1000)]
+    assert stats.frames == 150 and (tmp_path / "job" / "result.mp4").is_file()
+    assert not list((tmp_path / "job").glob("pass_*.mp4"))
 
 
 # --- Réveil et état du Space (faux Hugging Face) -------------------------------------------------------------------

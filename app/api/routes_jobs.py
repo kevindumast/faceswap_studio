@@ -87,8 +87,9 @@ def check_level(level: str, use_gpu: bool, active_mappings: int, length: float =
         raise HTTPException(422, f"Le niveau 4 est limité à {max_s:g} s d'extrait (quota GPU) : raccourcis le passage.")
     if level not in AVAILABLE_LEVELS:
         raise HTTPException(422, "Ce niveau n'est pas encore disponible.")
-    if level == CHARACTER and active_mappings != 1:
-        raise HTTPException(422, "Le niveau 4 remplace une seule personne à la fois.")
+    max_people = int(load_config().get("levels", {}).get(CHARACTER, {}).get("max_people", 2))
+    if level == CHARACTER and not 1 <= active_mappings <= max_people:
+        raise HTTPException(422, f"Le niveau 4 remplace 1 à {max_people} personnes par rendu (un passage GPU chacune).")
     if not use_gpu and not models_ready(level):
         raise HTTPException(422, "Les modèles de ce niveau ne sont pas installés (bouton « Installer » à l'étape Visages).")
 
