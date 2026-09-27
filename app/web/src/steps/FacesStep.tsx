@@ -18,7 +18,8 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, type FaceSet, type FramesFaces, type Mapping, type Person, type Photo, type Status, type Video } from "../lib/api";
+import { api, type FaceSet, type FramesFaces, type Level, type Mapping, type Person, type Photo, type Status, type Video } from "../lib/api";
+import { LevelPicker } from "../components/LevelPicker";
 import { faceIndex, mappingsEqual, personColor, reconcile } from "../lib/people";
 import { timecode } from "../lib/time";
 import { Button, Card, Menu, MenuItem, Notice, SectionTitle, SegmentedControl, cx } from "../components/ui";
@@ -34,6 +35,8 @@ type Props = {
   onConsent: (v: boolean) => void;
   mappings: Mapping[];
   onMappings: (m: Mapping[]) => void;
+  level: Level;
+  onLevel: (l: Level) => void;
   onNext: () => void;
 };
 
@@ -52,20 +55,22 @@ export function FacesStep(p: Props) {
 
   const persons = faceSet.data?.persons ?? [];
   const active = p.mappings.filter((m) => m.person).length;
-  const canGo = p.consent && persons.length > 0 && active > 0;
+  const levelReady = p.status?.levels[p.level]?.ready ?? p.level === "face";
+  const canGo = p.consent && persons.length > 0 && active > 0 && levelReady;
 
   return (
     <div>
       <SectionTitle
         eyebrow="Étape 3 · Visages"
         title="Qui remplace qui ?"
-        subtitle="Importe les photos : elles sont rangées automatiquement par personne. Chaque personne est ensuite associée à un visage du clip, et tu peux tout changer."
+        subtitle="Choisis jusqu'où va la transformation, puis importe les photos : elles sont rangées automatiquement par personne et associées aux visages du clip."
         right={
           <Button variant="primary" size="lg" disabled={!canGo} onClick={p.onNext} icon={<ArrowRight className="size-4" />}>
             Continuer
           </Button>
         }
       />
+      <LevelPicker value={p.level} onChange={p.onLevel} status={p.status} />
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
         <SourcePanel {...p} data={faceSet.data} />
         <TargetPanel video={p.video} selection={p.selection} persons={persons} mappings={p.mappings} onMappings={p.onMappings} />

@@ -12,8 +12,9 @@ from fastapi.staticfiles import StaticFiles
 from app import db
 from src import media
 from src.config import ROOT, load_config
+from src.levels import FACE
 
-from . import routes_faces, routes_jobs, routes_videos
+from . import routes_faces, routes_jobs, routes_models, routes_videos
 
 WEB_DIST = ROOT / "app" / "web" / "dist"
 
@@ -26,6 +27,9 @@ async def lifespan(_: FastAPI):
     for v in db.all_rows("videos", 500):
         if v["status"] in ("downloading", "preparing"):
             db.update("videos", v["id"], status="error", error="Interrompu par un redémarrage du serveur.")
+    for group in routes_models.GROUP_MB:  # téléchargements de modèles interrompus
+        if db.get_meta(f"download:{group}"):
+            db.set_meta(f"download:{group}", "")
     db.cleanup(float(cfg.retention_hours))
     yield
 
@@ -34,6 +38,7 @@ app = FastAPI(title="Faceswap Studio", lifespan=lifespan)
 app.include_router(routes_videos.router)
 app.include_router(routes_faces.router)
 app.include_router(routes_jobs.router)
+app.include_router(routes_models.router)
 
 
 @app.get("/api/status")
@@ -55,9 +60,9 @@ def status() -> dict:
         "photos_max": cfg.photos.max,
         "upload_max_mb": cfg.upload.max_mb,
         "video_ext": cfg.upload.video_ext,
-        "sec_per_frame": float(db.get_meta("sec_per_frame_single") or 0)
-        or db.last_sec_per_frame()
-        or cfg.render.default_sec_per_frame,
+        "sec_per_frame": routes_models.sec_per_frame(FACE),
+        "levels": routes_models.levels_status(routes_jobs.AVAILABLE_LEVELS),
+        "gpu": {"configured": routes_jobs.gpu_configured()},
         "example_url": cfg.youtube.example_url,
         "youtube_max_duration_s": cfg.youtube.max_duration_s,
     }

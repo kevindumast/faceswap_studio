@@ -19,9 +19,12 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app import db
+from src.assets import person_tone
 from src.config import load_config
 from src.faces import ModelsMissing
 from src.identity import SourceFace, analyze_photo, average_embedding
+from src.levels import FACE_TONE, PersonAssets
+from src.tone import ToneStats
 
 from .common import not_found, save_upload
 
@@ -124,6 +127,36 @@ def load_source_face(set_id: str, person: str | None = None) -> SourceFace:
     return SourceFace(average_embedding(embeddings))
 
 
+def person_photos(set_id: str, person: str | None) -> list[Path]:
+    """Photos valides d'une personne, en meilleure qualité disponible (1024 px, sinon vignette)."""
+    d = db.folder("faces", set_id)
+    data = _load(d)
+    out = []
+    for p in data["photos"]:
+        if p["ok"] and (person is None or p["person"] == person):
+            full = d / f"{p['id']}_full.jpg"
+            out.append(full if full.is_file() else d / f"{p['id']}.jpg")
+    return out
+
+
+def load_person_assets(set_id: str, person: str | None, level: str) -> PersonAssets:
+    """Tout ce dont le niveau a besoin pour cette personne. Le teint est mis en cache (recalculé si les photos changent)."""
+    assets = PersonAssets(source=load_source_face(set_id, person), photos=person_photos(set_id, person))
+    if level in (FACE_TONE,):
+        d = db.folder("faces", set_id)
+        key = ",".join(sorted(p.stem for p in assets.photos))
+        cache = d / f"tone_{person or 'all'}.json"
+        cached = json.loads(cache.read_text(encoding="utf-8")) if cache.is_file() else None
+        if cached and cached.get("key") == key:
+            assets.tone = ToneStats.from_dict(cached["tone"])
+        else:
+            assets.tone = person_tone(assets.photos)
+            if assets.tone is None:
+                raise RuntimeError(f"Teint introuvable sur les photos de la personne {person} (visage trop petit ou masqué).")
+            cache.write_text(json.dumps({"key": key, "tone": assets.tone.to_dict()}), encoding="utf-8")
+    return assets
+
+
 async def _add(set_id: str, d: Path, files: list[UploadFile]) -> dict:
     cfg = load_config()
     data = _load(d)
@@ -143,9 +176,11 @@ async def _add(set_id: str, d: Path, files: list[UploadFile]) -> dict:
         entry = {"id": photo_id, "name": upload.filename, "ok": result.ok, "person": None}
         img = cv2.imdecode(np.fromfile(str(raw), np.uint8), cv2.IMREAD_COLOR)
         if img is not None:
-            scale = min(1.0, 480 / max(img.shape[:2]))
-            thumb = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-            cv2.imwrite(str(d / f"{photo_id}.jpg"), thumb, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            # 1024 px pour les niveaux qui ont besoin de détails (tête, personne entière), 480 px pour l'UI.
+            for suffix, side, quality in (("_full", 1024, 92), ("", 480, 85)):
+                scale = min(1.0, side / max(img.shape[:2]))
+                resized = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+                cv2.imwrite(str(d / f"{photo_id}{suffix}.jpg"), resized, [cv2.IMWRITE_JPEG_QUALITY, quality])
         if raw.suffix != ".jpg" or img is None:
             raw.unlink(missing_ok=True)
         if result.ok:

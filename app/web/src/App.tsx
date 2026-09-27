@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { History } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { api, type Job, type Mapping, type Video } from "./lib/api";
+import { api, type Job, type Level, type Mapping, type Video } from "./lib/api";
 import { Stepper } from "./components/Stepper";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { Button, cx } from "./components/ui";
@@ -19,10 +19,12 @@ type Session = {
   faceSetId: string | null;
   consent: boolean;
   mappings: Mapping[];
+  level: Level;
   jobId: string | null;
 };
 
-const EMPTY: Session = { step: 0, videoId: null, selection: null, faceSetId: null, consent: false, mappings: [], jobId: null };
+// L'option GPU n'est volontairement pas dans la session : elle revient décochée à chaque rendu.
+const EMPTY: Session = { step: 0, videoId: null, selection: null, faceSetId: null, consent: false, mappings: [], level: "face", jobId: null };
 const KEY = "faceswap.session";
 
 function loadSession(): Session {
@@ -62,6 +64,8 @@ export default function App() {
   }, [video.error]);
 
   const min = status.data?.segment.min_s ?? 5;
+  // Niveau mémorisé mais plus proposé (ex. session d'une autre version) : retour au niveau 1.
+  const level: Level = status.data && !status.data.levels[s.level]?.available ? "face" : s.level;
   const ready = video.data?.status === "ready" ? video.data : null;
 
   const onVideoReady = useCallback(
@@ -81,6 +85,7 @@ export default function App() {
       faceSetId: j.face_set_id,
       selection: { start: j.params.start, end: j.params.end },
       mappings: j.params.mappings ?? [],
+      level: j.params.level ?? "face",
       jobId: j.id,
       consent: true,
       step: 3,
@@ -145,6 +150,8 @@ export default function App() {
                 onConsent={(v) => patch({ consent: v })}
                 mappings={s.mappings}
                 onMappings={onMappings}
+                level={level}
+                onLevel={(l) => patch({ level: l, jobId: null })}
                 onNext={() => patch({ step: 3, jobId: null })}
               />
             )}
@@ -155,6 +162,7 @@ export default function App() {
                 selection={s.selection}
                 faceSetId={s.faceSetId}
                 mappings={s.mappings}
+                level={level}
                 consent={s.consent}
                 jobId={s.jobId}
                 onJob={(id) => patch({ jobId: id })}

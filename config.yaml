@@ -17,6 +17,18 @@ models:
   inswapper_urls:
     - https://huggingface.co/ezioruan/inswapper_128.onnx/resolve/main/inswapper_128.onnx
     - https://huggingface.co/datasets/Gourieff/ReActor/resolve/main/models/inswapper_128.onnx
+  parser: bisenet_resnet_34.onnx          # segmentation du visage (niveau 2 et +)
+  parser_urls:
+    - https://huggingface.co/facefusion/models-3.0.0/resolve/main/bisenet_resnet_34.onnx
+
+# Niveaux de transformation. sec_per_frame = estimation CPU avant la première mesure sur ta machine.
+levels:
+  face:
+    sec_per_frame: 2.2
+  face_tone:
+    sec_per_frame: 2.9          # ≈ visage + 0,4 s de segmentation / recoloriage par visage
+    tone_strength_l: 0.5        # part de la luminosité transférée (1 = tout, 0 = garde l'éclairage de la scène)
+    tone_smoothing: 0.7         # EMA des stats de teint entre images (anti-scintillement)
 
 segment:
   min_s: 5
