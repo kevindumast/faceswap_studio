@@ -60,6 +60,7 @@ def main() -> None:
         sys.exit("Jeton requis : https://huggingface.co/settings/tokens")
 
     from huggingface_hub import HfApi
+    from huggingface_hub.errors import HfHubHTTPError
 
     api = HfApi(token=token)
     user = api.whoami()["name"]
@@ -70,7 +71,19 @@ def main() -> None:
     key = saved_key or secrets.token_urlsafe(24)
 
     print(f"Space {args.space} (privé, ZeroGPU)…")
-    api.create_repo(args.space, repo_type="space", space_sdk="gradio", private=True, exist_ok=True)
+    try:
+        # ZeroGPU dès la création : un compte gratuit peut héberger 2 Spaces ZeroGPU, mais pas un Space Gradio
+        # sur le CPU par défaut (réservé au PRO, erreur 402).
+        api.create_repo(args.space, repo_type="space", space_sdk="gradio", space_hardware=ZEROGPU, private=True,
+                        exist_ok=True)
+    except HfHubHTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        if status == 402:
+            sys.exit("× Hugging Face refuse de créer le Space ZeroGPU sur ce compte.\n"
+                     "  Compte gratuit : il faut un e-mail vérifié et un compte de plus de 30 jours\n"
+                     "  (https://huggingface.co/settings/account), sinon l'abonnement PRO (9 $/mois).\n"
+                     f"  Détail : {exc.server_message or exc}")
+        raise
     api.add_space_secret(args.space, "APP_KEY", key, description="Clé partagée avec l'appli Faceswap Studio")
 
     with tempfile.TemporaryDirectory() as tmp:
