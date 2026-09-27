@@ -16,12 +16,14 @@ export function PhotoViewer({
   photos,
   index,
   framing,
+  framingError,
   onIndex,
   onClose,
 }: {
   photos: Photo[];
   index: number | null;
   framing?: PersonFraming;
+  framingError?: string;
   onIndex: (i: number) => void;
   onClose: () => void;
 }) {
@@ -71,7 +73,21 @@ export function PhotoViewer({
             </button>
           </header>
           <div className="relative flex min-h-0 flex-1 items-center justify-center px-14">
-            <img key={photo.id} src={photo.full_url} alt={photo.name} className="max-h-full max-w-full rounded-lg object-contain shadow-2xl" onClick={(e) => e.stopPropagation()} />
+            <img
+              key={photo.id}
+              src={photo.full_url}
+              alt={photo.name}
+              className="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+              onError={(e) => {
+                // Version 1024 px indisponible (API pas encore relancée, ancienne photo) : version 480 px.
+                const img = e.currentTarget;
+                if (!img.dataset.fallback) {
+                  img.dataset.fallback = "1";
+                  img.src = photo.photo_url;
+                }
+              }}
+            />
             {index > 0 && (
               <button onClick={go(index - 1)} aria-label="Photo précédente" className="absolute left-3 flex size-10 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20">
                 <ChevronLeft className="size-5" />
@@ -99,6 +115,8 @@ export function PhotoViewer({
                 <span className="text-white/70">{text.hint}</span>
                 {isReference && <span className="rounded-full bg-white/10 px-2.5 py-1 text-white/90">Photo utilisée au niveau 4</span>}
               </>
+            ) : framingError ? (
+              <span className="text-white/50">Cadrage indisponible : {framingError}</span>
             ) : (
               <span className="text-white/50">Analyse du cadrage…</span>
             )}

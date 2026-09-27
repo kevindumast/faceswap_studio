@@ -328,7 +328,14 @@ function PersonRow(p: {
           </motion.div>
         )}
       </AnimatePresence>
-      <PhotoViewer photos={p.person.photos} index={viewing} framing={framing.data} onIndex={setViewing} onClose={() => setViewing(null)} />
+      <PhotoViewer
+        photos={p.person.photos}
+        index={viewing}
+        framing={framing.data}
+        framingError={framing.error?.message}
+        onIndex={setViewing}
+        onClose={() => setViewing(null)}
+      />
     </li>
   );
 }
