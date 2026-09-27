@@ -24,6 +24,12 @@ class MoveIn(BaseModel):
     person: str  # id d'une autre personne, ou "new"
 
 
+class AssignPendingIn(BaseModel):
+    box: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)  # x1, y1, x2, y2 en fractions 0-1 de l'image
+    target: str  # id d'une personne, ou "new"
+    name: str | None = None  # nom de la nouvelle personne (si target == "new")
+
+
 def _load(pid: str) -> dict:
     try:
         return library.load(pid)
@@ -59,9 +65,46 @@ async def import_photos(files: list[UploadFile] = File(...), consent: bool = For
             raise HTTPException(503, str(exc)) from exc
         finally:
             raw.unlink(missing_ok=True)
-        res.pop("image", None)
+        img = res.pop("image", None)
+        if not res["ok"] and img is not None:
+            pending = library.add_pending(img, upload.filename or raw.name)
+            res["pending_id"] = pending["id"]
         results.append(res)
     return {"imported": results, "people": [library.public(p) for p in library.all_people()]}
+
+
+@router.get("/photos/pending")
+def list_pending() -> list[dict]:
+    """Photos importées sans visage détecté, en attente d'un rattachement manuel."""
+    return library.public_pending()
+
+
+@router.get("/photos/pending/{rid}/{kind}.jpg")
+def pending_file(rid: str, kind: str) -> FileResponse:
+    path = library.pending_file(rid, kind)
+    if path is None:
+        raise not_found("Photo")
+    return FileResponse(path, media_type="image/jpeg")
+
+
+@router.delete("/photos/pending/{rid}")
+def delete_pending(rid: str) -> dict:
+    library.delete_pending(rid)
+    return {"ok": True}
+
+
+@router.post("/photos/pending/{rid}/assign")
+def assign_pending(rid: str, body: AssignPendingIn) -> dict:
+    """Rattache une photo sans visage auto-détecté à une personne, via une zone tracée à la main."""
+    if body.target != "new" and not library.exists(body.target):
+        raise HTTPException(422, "Personne inconnue.")
+    try:
+        person = library.assign_pending(rid, body.box, body.target, body.name)
+    except library.PersonNotFound:
+        raise not_found("Photo en attente")
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return library.public(person)
 
 
 @router.get("/{pid}")

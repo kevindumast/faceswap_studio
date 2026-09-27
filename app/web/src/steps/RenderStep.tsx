@@ -429,8 +429,10 @@ function PausedView({ job, video }: { job: Job; video: Video }) {
   const qc = useQueryClient();
   const resume = useMutation({ mutationFn: () => api.resumeJob(job.id), onSuccess: (j) => qc.setQueryData(["job", j.id], j) });
   const cancel = useMutation({ mutationFn: () => api.cancelJob(job.id), onSuccess: (j) => qc.setQueryData(["job", j.id], j) });
+  const [watching, setWatching] = useState(false);
   const info = video.info!;
   const frac = job.total ? job.done / job.total : 0;
+  const canWatch = !!(job.partial_url && job.before_url);
   return (
     <div>
       <SectionTitle
@@ -454,12 +456,24 @@ function PausedView({ job, video }: { job: Job; video: Video }) {
         </Notice>
       )}
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
-        <div className="relative overflow-hidden rounded-[var(--radius-card)] bg-black ring-1 ring-line" style={{ aspectRatio: `${info.width} / ${info.height}` }}>
-          {job.done > 0 && <img src={`${job.preview_url}?v=${job.done}`} alt="Dernière image calculée" className="absolute inset-0 size-full object-contain opacity-70" />}
-          <span className="absolute top-3 left-3 flex items-center gap-1.5 rounded-full bg-black/60 px-2.5 py-1 text-[11px] backdrop-blur-md">
-            <Pause className="size-3 fill-current" /> Dernière image calculée
-          </span>
-        </div>
+        {watching && canWatch ? (
+          <Compare key={job.partial_url} before={job.before_url!} after={job.partial_url!} aspect={`${info.width} / ${info.height}`} fps={info.fps} autoPlay />
+        ) : (
+          <div className="relative overflow-hidden rounded-[var(--radius-card)] bg-black ring-1 ring-line" style={{ aspectRatio: `${info.width} / ${info.height}` }}>
+            {job.done > 0 && <img src={`${job.preview_url}?v=${job.done}`} alt="Dernière image calculée" className="absolute inset-0 size-full object-contain opacity-70" />}
+            <span className="absolute top-3 left-3 flex items-center gap-1.5 rounded-full bg-black/60 px-2.5 py-1 text-[11px] backdrop-blur-md">
+              <Pause className="size-3 fill-current" /> Dernière image calculée
+            </span>
+            {canWatch && (
+              <button type="button" onClick={() => setWatching(true)} className="group absolute inset-0 flex flex-col items-center justify-center gap-3 outline-none">
+                <span className="flex size-16 items-center justify-center rounded-full bg-accent text-accent-ink shadow-lg transition-transform group-hover:scale-105 group-focus-visible:ring-4 group-focus-visible:ring-accent/40">
+                  <Play className="ml-1 size-7 fill-current" />
+                </span>
+                <span className="rounded-full bg-black/60 px-3 py-1 text-[13px] backdrop-blur-md">Revoir ce qui est déjà rendu (avant / après)</span>
+              </button>
+            )}
+          </div>
+        )}
         <Card className="flex flex-col p-5 sm:p-6">
           <div className="flex items-baseline justify-between">
             <span className="font-mono text-5xl font-medium tracking-tight tabular">

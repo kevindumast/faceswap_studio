@@ -8,6 +8,7 @@ CLI : python -m src.pipeline --video clip.mp4 --start 12 --end 20 --faces data/s
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import time
 from dataclasses import asdict, dataclass, field
@@ -70,6 +71,29 @@ class Checkpoint:
         for name in self.chunks:
             (self.path.parent / name).unlink(missing_ok=True)
         self.path.unlink(missing_ok=True)
+        _drop_partials(self.path.parent)
+
+
+def partial_preview(work_dir: Path) -> Path | None:
+    """Ce qui est déjà rendu (rendu en pause) : morceaux recollés + son d'origine de l'extrait, sans réencodage.
+
+    Un fichier par point de reprise (partial_<images>.mp4) : fabriqué une seule fois, jamais réécrit pendant qu'il est lu.
+    """
+    checkpoint = Checkpoint.load(work_dir)
+    parts = [work_dir / name for name in checkpoint.chunks]
+    if not parts or not all(p.is_file() for p in parts):
+        return None
+    out = work_dir / f"partial_{checkpoint.frames_done}.mp4"
+    if not out.is_file():
+        _drop_partials(work_dir)
+        media.concat_with_audio(parts, work_dir / "cut.mp4", out)
+    return out
+
+
+def _drop_partials(work_dir: Path) -> None:
+    for old in work_dir.glob("partial_*.mp4"):
+        with contextlib.suppress(OSError):   # encore ouvert par le navigateur (Windows) : il partira la fois suivante
+            old.unlink()
 
 
 def _tick(report: Progress, i: int, total: int) -> bool:

@@ -325,3 +325,17 @@ def concat_videos(parts: list[Path], dst: Path) -> None:
         ffmpeg("-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy", str(dst))
     finally:
         listing.unlink(missing_ok=True)
+
+
+def concat_with_audio(parts: list[Path], audio: Path, dst: Path) -> None:
+    """Recolle des morceaux sans réencodage et y remet le son d'un autre fichier, coupé à la longueur de l'image."""
+    listing = dst.with_suffix(".txt")
+    listing.write_text("".join(f"file '{p.resolve().as_posix()}'\n" for p in parts), encoding="utf-8")
+    tmp = dst.with_name(f"{dst.stem}.tmp{dst.suffix}")
+    try:
+        ffmpeg("-f", "concat", "-safe", "0", "-i", str(listing), "-i", str(audio), "-map", "0:v", "-map", "1:a:0?",
+               "-c", "copy", "-shortest", "-movflags", "+faststart", str(tmp))
+        tmp.replace(dst)                # jamais de fichier à moitié écrit servi au navigateur
+    finally:
+        listing.unlink(missing_ok=True)
+        tmp.unlink(missing_ok=True)

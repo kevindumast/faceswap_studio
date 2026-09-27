@@ -72,6 +72,8 @@ upload:
 
 photos:
   max: 20
+  det_size: 960        # import dans la bibliothèque : détection aussi tolérante qu'à l'étape Visages (voir scan)
+  det_thresh: 0.3       # accepte les visages flous, de profil ou dans l'ombre
 
 youtube:
   example_url: https://www.youtube.com/watch?v=x9yop0nYR9g   # proposé comme exemple dans l'UI

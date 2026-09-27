@@ -136,7 +136,6 @@ function SourcePanel(p: Props & { data?: FaceSet }) {
     },
     onSuccess: refresh,
   });
-  const deletePhoto = useMutation({ mutationFn: ({ pid, photo }: { pid: string; photo: string }) => api.deletePhoto(pid, photo), onSuccess: refresh });
   const deleteRejected = useMutation({ mutationFn: (rid: string) => api.deleteRejected(p.faceSetId!, rid), onSuccess: applySet });
 
   const pick = (list: FileList | null) => {
@@ -156,7 +155,7 @@ function SourcePanel(p: Props & { data?: FaceSet }) {
       pick(e.dataTransfer.files);
     },
   };
-  const error = upload.error ?? addFromLibrary.error ?? rename.error ?? move.error ?? deletePhoto.error;
+  const error = upload.error ?? addFromLibrary.error ?? rename.error ?? move.error;
 
   return (
     <Card className="flex flex-col p-5 sm:p-6">
@@ -183,7 +182,7 @@ function SourcePanel(p: Props & { data?: FaceSet }) {
                 onRename={(name) => rename.mutate({ pid: person.id, name })}
                 onRemove={() => removeFromVideo.mutate(person.id)}
                 onMove={(photo, to) => move.mutate({ pid: person.id, photo, to })}
-                onDeletePhoto={(photo) => deletePhoto.mutate({ pid: person.id, photo })}
+                onDeletePhoto={() => removeFromVideo.mutate(person.id)}
               />
             </motion.div>
           ))}
@@ -451,8 +450,8 @@ function PhotoTile({ photo, color, moveTargets, onMove, onDelete }: { photo: Pho
         <img src={photo.crop_url} alt={photo.name} className="size-full object-cover" />
       </div>
       <button
-        onClick={() => window.confirm("Supprimer cette photo de ta bibliothèque ?") && onDelete()}
-        aria-label={`Supprimer ${photo.name}`}
+        onClick={() => window.confirm("Retirer cette personne de cette vidéo ? Elle reste dans ta bibliothèque.") && onDelete()}
+        aria-label="Retirer de cette vidéo"
         className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full bg-overlay text-fg opacity-0 ring-1 ring-line-strong transition-opacity group-hover:opacity-100 hover:bg-danger hover:text-accent-ink focus-visible:opacity-100"
       >
         <X className="size-3" />
@@ -548,24 +547,22 @@ function TargetPanel({
 
   const personOf = (i: number): string | null | undefined => (scan ? mappings.find((m) => faceIndex(scan, m) === i)?.person : undefined);
 
+  // Une même personne peut remplacer plusieurs visages : la recherche coupe parfois un acteur en deux
+  // (profil, éclairage…), et il faut pouvoir lui donner la même personne aux deux endroits.
   const assign = (i: number, person: string | null) => {
     if (!scan) return;
-    const current = personOf(i) ?? null;
-    const next = mappings
-      .filter((m) => faceIndex(scan, m) >= 0)
-      .map((m) => {
-        // Personne déjà utilisée ailleurs : on échange les deux visages (plus naturel qu'un doublon).
-        if (person && m.person === person && faceIndex(scan, m) !== i) return { ...m, person: current };
-        return m;
-      })
-      .filter((m) => faceIndex(scan, m) !== i);
+    const next = mappings.filter((m) => {
+      const k = faceIndex(scan, m);
+      return k >= 0 && k !== i;
+    });
     next.push({ t: scan.faces[i].t, box: scan.faces[i].box, person });
     onMappings(next);
     setOpenMenu(null);
   };
   const assigned = scan ? mappings.filter((m) => faceIndex(scan, m) >= 0 && m.person) : [];
+  const canSwap = assigned.length === 2 && assigned[0].person !== assigned[1].person;
   const swapTwo = () => {
-    if (assigned.length !== 2) return;
+    if (!canSwap) return;
     const others = mappings.filter((m) => !assigned.includes(m));
     onMappings([...others, { ...assigned[0], person: assigned[1].person }, { ...assigned[1], person: assigned[0].person }]);
   };
@@ -613,7 +610,7 @@ function TargetPanel({
           <div className="mb-2 flex items-center justify-between">
             <span className="text-[13px] font-medium">Associations</span>
             <div className="flex gap-1">
-              {assigned.length === 2 && (
+              {canSwap && (
                 <Button variant="ghost" size="sm" onClick={swapTwo} icon={<ArrowLeftRight className="size-3.5" />}>
                   Inverser
                 </Button>
