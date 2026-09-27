@@ -161,6 +161,10 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
     body: body instanceof FormData ? body : body === undefined ? undefined : JSON.stringify(body),
   });
   if (!res.ok) throw await parseError(res);
+  // Page HTML au lieu de données : en pratique, l'API tourne avec une ancienne version qui ne connaît pas la route.
+  if (!(res.headers.get("content-type") ?? "").includes("application/json")) {
+    throw new ApiError(res.status, "L'API ne connaît pas cette fonction : elle tourne sans doute avec une ancienne version. Relance l'API et le worker (DEMARRAGE.md).");
+  }
   return res.json() as Promise<T>;
 }
 

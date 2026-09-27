@@ -5,7 +5,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -78,6 +78,9 @@ if WEB_DIST.is_dir():
 
     @app.get("/{path:path}", include_in_schema=False)
     def spa(path: str) -> FileResponse:
+        # Une route /api inconnue doit rester une erreur JSON, pas la page du site (sinon le front lit du HTML).
+        if path == "api" or path.startswith("api/"):
+            raise HTTPException(404, "Route d'API inconnue : l'API tourne peut-être avec une ancienne version, relance-la.")
         file = (WEB_DIST / path).resolve()
         if path and file.is_file() and file.is_relative_to(WEB_DIST):
             return FileResponse(file)
