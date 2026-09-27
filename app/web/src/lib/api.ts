@@ -47,7 +47,11 @@ export type UrlInfo = {
 };
 
 /** Photo d'une personne de la bibliothèque (toujours avec un visage détecté). */
-export type Photo = { id: string; name: string; crop_url: string; photo_url: string };
+/** crop_url : visage recadré (vignette) ; full_url : photo entière 1024 px (celle qu'utilise le niveau 4). */
+export type Photo = { id: string; name: string; crop_url: string; photo_url: string; full_url: string };
+/** Cadrage d'une photo pour le niveau 4 : de la tête aux pieds, mi-corps, portrait, ou visage introuvable. */
+export type Framing = "full" | "half" | "portrait" | "none";
+export type PersonFraming = { reference: string | null; photos: Record<string, { face_ratio: number | null; framing: Framing }> };
 /** Personne de la bibliothèque : permanente, réutilisable dans toutes les vidéos. */
 export type Person = { id: string; name: string; count: number; cover_url: string | null; photos: Photo[]; created_at?: number; updated_at?: number };
 export type RejectedPhoto = { id: string; name: string; photo_url: string };
@@ -279,6 +283,7 @@ export const api = {
   deletePerson: (pid: string) => request<{ ok: boolean }>("DELETE", `/api/people/${pid}`),
   movePhoto: (pid: string, photoId: string, person: string | "new") =>
     request<{ moved_to: string; source_exists: boolean }>("PATCH", `/api/people/${pid}/photos/${photoId}`, { person }),
+  framing: (pid: string) => request<PersonFraming>("GET", `/api/people/${pid}/framing`),
   deletePhoto: (pid: string, photoId: string) =>
     request<{ ok: boolean; person_exists: boolean }>("DELETE", `/api/people/${pid}/photos/${photoId}`),
   importToLibrary: (files: File[]) => {

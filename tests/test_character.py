@@ -66,6 +66,13 @@ def test_reference_is_the_most_full_body_photo(tmp_path):
         choose_reference([tmp_path / "x"], ratio=lambda p: None)
 
 
+def test_framing_categories():
+    from src.character import Reference, framing_of
+
+    assert [framing_of(r) for r in (0.10, 0.2154, 0.45, None)] == ["full", "half", "portrait", "none"]
+    assert Reference(Path("x"), 0.12).full_body and not Reference(Path("x"), 0.2154).full_body
+
+
 def test_gpu_estimate_matches_the_space():
     from src.character import gpu_seconds
 

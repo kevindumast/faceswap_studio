@@ -148,6 +148,16 @@ def delete_photo(pid: str, photo_id: str) -> dict:
     return {"ok": True, "person_exists": still}
 
 
+@router.get("/{pid}/framing")
+def framing(pid: str) -> dict:
+    """Photos en pied ou portraits, et celle que le niveau 4 utilisera (calculé une fois par photo)."""
+    _load(pid)
+    try:
+        return library.framing(pid)
+    except ModelsMissing as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
 @router.get("/{pid}/photos/{photo_id}/{kind}.jpg")
 def photo_file(pid: str, photo_id: str, kind: str) -> FileResponse:
     _load(pid)

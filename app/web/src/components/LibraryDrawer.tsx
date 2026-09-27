@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
-import { AlertTriangle, BookUser, Check, ChevronDown, ImagePlus, Loader2, Pencil, Search, ShieldCheck, Trash2, UserPlus, X } from "lucide-react";
+import { AlertTriangle, BookUser, Check, ChevronDown, ImagePlus, Loader2, Pencil, PersonStanding, Search, ShieldCheck, Trash2, UserPlus, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, type ImportResult, type PendingPhoto, type Person } from "../lib/api";
+import { FRAMING_TEXT, PhotoViewer } from "./PhotoViewer";
 import { Button, Notice, cx } from "./ui";
 
 /** Bibliothèque de personnes : toutes les têtes importées, nommées, réutilisables dans chaque vidéo. */
@@ -227,6 +228,14 @@ function PersonRow(p: {
 }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(p.person.name);
+  const [viewing, setViewing] = useState<number | null>(null);
+  // Cadrage des photos (en pied ou non), calculé une fois par photo côté serveur.
+  const framing = useQuery({
+    queryKey: ["framing", p.person.id, p.person.photos.map((ph) => ph.id).join(",")],
+    queryFn: () => api.framing(p.person.id),
+    enabled: p.expanded || viewing != null,
+    staleTime: Infinity,
+  });
   const updated = p.person.updated_at ? new Date(p.person.updated_at * 1000).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }) : null;
   const save = () => {
     setEditing(false);
@@ -279,22 +288,47 @@ function PersonRow(p: {
         {p.expanded && (
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
             <div className="flex flex-wrap gap-2 border-t border-line p-2.5">
-              {p.person.photos.map((ph) => (
-                <div key={ph.id} className="group relative size-16 overflow-hidden rounded-lg" title={ph.name}>
-                  <img src={ph.crop_url} alt={ph.name} className="size-full object-cover" />
-                  <button
-                    onClick={() => p.onDeletePhoto(ph.id)}
-                    aria-label={`Supprimer ${ph.name}`}
-                    className="absolute top-1 right-1 flex size-5 items-center justify-center rounded-full bg-overlay opacity-0 ring-1 ring-line-strong group-hover:opacity-100 hover:bg-danger hover:text-accent-ink"
+              {p.person.photos.map((ph, i) => {
+                const info = framing.data?.photos[ph.id];
+                const isReference = framing.data?.reference === ph.id;
+                return (
+                  <div
+                    key={ph.id}
+                    className={cx("group relative size-16 overflow-hidden rounded-lg", isReference && "ring-2 ring-accent")}
+                    title={`${ph.name}${info ? ` · ${FRAMING_TEXT[info.framing].label}` : ""}${isReference ? " · utilisée au niveau 4" : ""}`}
                   >
-                    <X className="size-3" />
-                  </button>
-                </div>
-              ))}
+                    <button onClick={() => setViewing(i)} aria-label={`Voir ${ph.name} en grand`} className="size-full cursor-zoom-in">
+                      <img src={ph.crop_url} alt={ph.name} className="size-full object-cover" />
+                    </button>
+                    {info && (info.framing === "full" || info.framing === "half") && (
+                      <span
+                        className={cx(
+                          "pointer-events-none absolute bottom-1 left-1 flex size-5 items-center justify-center rounded-full ring-1 ring-black/20",
+                          info.framing === "full" ? "bg-accent text-accent-ink" : "bg-warn text-accent-ink",
+                        )}
+                      >
+                        <PersonStanding className="size-3" />
+                      </span>
+                    )}
+                    <button
+                      onClick={() => p.onDeletePhoto(ph.id)}
+                      aria-label={`Supprimer ${ph.name}`}
+                      className="absolute top-1 right-1 flex size-5 items-center justify-center rounded-full bg-overlay opacity-0 ring-1 ring-line-strong group-hover:opacity-100 hover:bg-danger hover:text-accent-ink"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
+            <p className="px-2.5 pb-2.5 text-[11px] text-faint">
+              Vignettes recadrées sur le visage : clique pour voir la photo entière. <PersonStanding className="inline size-3" /> = en pied (vert) ou à
+              mi-corps (orange) ; la photo entourée est celle que le niveau 4 utilisera.
+            </p>
           </motion.div>
         )}
       </AnimatePresence>
+      <PhotoViewer photos={p.person.photos} index={viewing} framing={framing.data} onIndex={setViewing} onClose={() => setViewing(null)} />
     </li>
   );
 }

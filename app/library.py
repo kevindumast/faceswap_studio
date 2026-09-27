@@ -288,16 +288,21 @@ def delete_photo(pid: str, photo_id: str) -> bool:
 
 
 def photo_file(pid: str, photo_id: str, kind: str) -> Path | None:
-    if not photo_id.isalnum() or kind not in ("crop", "photo"):
+    """crop : visage recadré (vignettes) ; photo : photo entière 480 px ; full : photo entière 1024 px."""
+    if not photo_id.isalnum() or kind not in ("crop", "photo", "full"):
         return None
-    path = _dir(pid) / (f"{photo_id}_crop.jpg" if kind == "crop" else f"{photo_id}.jpg")
+    name = {"crop": f"{photo_id}_crop.jpg", "photo": f"{photo_id}.jpg", "full": f"{photo_id}_full.jpg"}[kind]
+    path = _dir(pid) / name
+    if kind == "full" and not path.is_file():   # photos importées avant la version 1024 px
+        path = _dir(pid) / f"{photo_id}.jpg"
     return path if path.is_file() else None
 
 
 def public(person: dict) -> dict:
     base = f"/api/people/{person['id']}/photos"
     photos = [{"id": ph["id"], "name": ph["name"], "crop_url": f"{base}/{ph['id']}/crop.jpg",
-               "photo_url": f"{base}/{ph['id']}/photo.jpg"} for ph in person["photos"]]
+               "photo_url": f"{base}/{ph['id']}/photo.jpg", "full_url": f"{base}/{ph['id']}/full.jpg"}
+              for ph in person["photos"]]
     return {"id": person["id"], "name": person["name"], "count": len(photos),
             "cover_url": photos[0]["crop_url"] if photos else None, "photos": photos,
             "created_at": person.get("created_at"), "updated_at": person.get("updated_at")}
@@ -311,6 +316,38 @@ def photo_paths(pid: str) -> list[Path]:
         full = d / f"{ph['id']}_full.jpg"
         out.append(full if full.is_file() else d / f"{ph['id']}.jpg")
     return out
+
+
+def framing(pid: str) -> dict:
+    """Cadrage de chaque photo pour le niveau 4 : part de la hauteur occupée par le visage (petit = photo en pied).
+
+    Calculé une fois par photo puis gardé dans la fiche ; « reference » = la photo que le niveau 4 utilisera
+    (même choix que le worker : la plus en pied).
+    """
+    from src.character import face_ratio, framing_of
+
+    person = load(pid)
+    d = _dir(pid)
+    changed = False
+    for ph in person["photos"]:
+        if "face_ratio" not in ph:
+            full = d / f"{ph['id']}_full.jpg"
+            ph["face_ratio"] = face_ratio(full if full.is_file() else d / f"{ph['id']}.jpg")
+            changed = True
+    if changed:
+        with _lock:
+            fresh = load(pid)            # une photo a pu être ajoutée ou retirée entre-temps
+            ratios = {ph["id"]: ph["face_ratio"] for ph in person["photos"]}
+            for ph in fresh["photos"]:
+                if ph["id"] in ratios and "face_ratio" not in ph:
+                    ph["face_ratio"] = ratios[ph["id"]]
+            # Simple cache : ni la date « modifiée le » ni l'ordre de la bibliothèque ne changent.
+            (d / "person.json").write_text(json.dumps(fresh, ensure_ascii=False), encoding="utf-8")
+    scored = [ph for ph in person["photos"] if ph.get("face_ratio") is not None]
+    reference = min(scored, key=lambda ph: ph["face_ratio"])["id"] if scored else None
+    return {"reference": reference,
+            "photos": {ph["id"]: {"face_ratio": ph.get("face_ratio"), "framing": framing_of(ph.get("face_ratio"))}
+                       for ph in person["photos"]}}
 
 
 def assets(pid: str, level: str) -> PersonAssets:

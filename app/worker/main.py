@@ -103,9 +103,12 @@ def run_character(job: dict, source: Path, opts: RenderOptions, mapping: FaceMap
     silent = out / "cut_silent.mp4"          # le son ne part pas : il est remis à l'assemblage
     media.ffmpeg("-i", str(segment.path), "-an", "-c:v", "copy", str(silent))
     reference = choose_reference(mapping.person.photos)
-    if not reference.full_body:
+    if reference.framing == "portrait":
         stats.warnings.append("Pas de photo en pied pour cette personne : le corps et les habits ont été inventés. "
                               "Ajoute une photo en pied dans la bibliothèque pour un meilleur résultat.")
+    elif reference.framing == "half":
+        stats.warnings.append("Photo à mi-corps seulement : le bas du corps (pantalon, chaussures) a été inventé. "
+                              "Une photo en pied, de la tête aux pieds, donne un meilleur résultat.")
     progress("cut", 1, 1)
 
     local = relative_targets([mapping], opts.start, opts.end - opts.start)[0]
