@@ -8,6 +8,7 @@ import { faceIndex, styleOf } from "../lib/people";
 import { cappedFps, duration, seconds, timecode } from "../lib/time";
 import { Button, Card, Notice, ProgressBar, SectionTitle, SegmentedControl, Switch, cx } from "../components/ui";
 import { Compare } from "../components/Compare";
+import { openEngineSettings } from "../components/EngineSettings";
 import type { Selection } from "../components/trimmer/Trimmer";
 import { PersonBadge } from "./FacesStep";
 
@@ -98,7 +99,13 @@ function Setup(p: Props) {
   const blockedByGpu = !!info.gpuOnly && !useGpu;
   // Mode « vidéo complète » : le reste du clip est seulement réencodé (≈ 4× plus vite que le temps réel).
   const fullExtra = p.video.info!.duration * 0.25;
-  const estimate = frames * spf * swapFactor + 15 + (output === "full" ? fullExtra : 0);
+  // ZeroGPU : temps GPU (= quota) par image, + envoi, file d'attente et réveil éventuel du Space.
+  const gpuSpf = p.status?.gpu.sec_per_frame?.[p.level] ?? 0.1;
+  const gpuSeconds = frames * gpuSpf * swapFactor;
+  const quotaLeft = (p.status?.gpu.free_quota_s ?? 300) - (p.status?.gpu.used_today_s ?? 0);
+  const estimate = useGpu
+    ? gpuSeconds + 60 + (output === "full" ? fullExtra : 0)
+    : frames * spf * swapFactor + 15 + (output === "full" ? fullExtra : 0);
   const faceSet = useQuery({ queryKey: ["faceset", p.faceSetId], queryFn: () => api.faceSet(p.faceSetId) });
   // Même requête que l'étape Visages : la recherche du passage est déjà en cache.
   const scan = useQuery({
@@ -221,7 +228,7 @@ function Setup(p: Props) {
               <Notice tone="warn">Plus le rendu est réaliste, plus l'étiquette compte : sans elle, la vidéo peut passer pour vraie une fois partagée.</Notice>
             )}
           </div>
-          <GpuOption checked={useGpu} onChange={setUseGpu} configured={gpuConfigured} required={!!info.gpuOnly} />
+          <GpuOption checked={useGpu} onChange={setUseGpu} configured={gpuConfigured} required={!!info.gpuOnly} quotaNeeded={gpuSeconds} quotaLeft={quotaLeft} />
           <div className="mt-auto pt-6">
             {p.status && !p.status.worker && (
               <Notice tone="warn" className="mb-4">
@@ -240,8 +247,8 @@ function Setup(p: Props) {
                 </div>
                 <div className="font-mono text-lg tabular">≈ {duration(estimate)}</div>
                 <div className="mt-0.5 font-mono text-[11px] text-faint tabular" title="Images du passage × secondes par image (mesurée sur ta machine) × visages remplacés">
-                  {frames} img × {spf.toFixed(1).replace(".", ",")} s{active.length > 1 ? ` × ${swapFactor.toFixed(2).replace(".", ",")} (${active.length} visages)` : ""}
-                  {output === "full" ? ` + ${duration(fullExtra)} recopie` : ""}
+                  {frames} img × {(useGpu ? gpuSpf : spf).toFixed(useGpu ? 2 : 1).replace(".", ",")} s{useGpu ? " (ZeroGPU)" : ""}{active.length > 1 ? ` × ${swapFactor.toFixed(2).replace(".", ",")} (${active.length} visages)` : ""}
+                  {output === "full" ? ` + ${duration(fullExtra)} recopie` : ""}{useGpu ? " + ~1 min d'envoi" : ""}
                 </div>
               </div>
               <Button
@@ -264,7 +271,7 @@ function Setup(p: Props) {
 }
 
 /** Option GPU : décochée par défaut, grisée tant qu'aucun GPU n'est branché, jamais cochée à la place de l'utilisateur. */
-function GpuOption({ checked, onChange, configured, required }: { checked: boolean; onChange: (v: boolean) => void; configured: boolean; required: boolean }) {
+function GpuOption({ checked, onChange, configured, required, quotaNeeded, quotaLeft }: { checked: boolean; onChange: (v: boolean) => void; configured: boolean; required: boolean; quotaNeeded: number; quotaLeft: number }) {
   return (
     <div className="mt-4 border-t border-line pt-4">
       <label className={cx("flex items-start gap-3", configured ? "cursor-pointer" : "cursor-not-allowed opacity-60")}>
@@ -282,12 +289,26 @@ function GpuOption({ checked, onChange, configured, required }: { checked: boole
             <Zap className="size-3.5 text-warn" /> Utiliser le GPU (ZeroGPU)
           </span>
           <span className="mt-0.5 block text-[13px] text-muted">
-            {configured
-              ? "Consomme ton quota ZeroGPU. Décoché : calcul sur ce PC."
-              : "Aucun GPU ZeroGPU branché : le calcul se fait sur ce PC."}
+            {configured ? (
+              <>
+                ≈ {duration(quotaNeeded)} de GPU sur ton quota (il reste ≈ {duration(Math.max(0, quotaLeft))} aujourd'hui en gratuit). Décoché : calcul sur ce PC.
+              </>
+            ) : (
+              "Aucun GPU ZeroGPU branché : le calcul se fait sur ce PC."
+            )}
           </span>
+          {!configured && (
+            <button type="button" onClick={openEngineSettings} className="mt-1 text-[13px] text-accent underline-offset-2 hover:underline">
+              Brancher ZeroGPU
+            </button>
+          )}
         </span>
       </label>
+      {configured && checked && quotaNeeded > quotaLeft && (
+        <Notice tone="warn" className="mt-3">
+          Ce rendu demande plus que le quota restant aujourd'hui : il risque d'être coupé. Raccourcis le passage ou décoche l'option.
+        </Notice>
+      )}
       {required && !checked && (
         <Notice tone="warn" className="mt-3">
           Ce niveau ne peut tourner que sur GPU : coche l'option{configured ? "" : " (après avoir branché ZeroGPU)"} pour lancer le rendu.

@@ -33,8 +33,10 @@ def output_fps(info: dict, limit: bool) -> float:
 
 
 def gpu_configured() -> bool:
-    """ZeroGPU branché ? (phase B ; tant qu'il n'existe pas, l'option GPU est refusée proprement)."""
-    return bool(db.get_meta("zerogpu_space"))
+    """ZeroGPU branché (Space + clé) ? Sinon l'option GPU est refusée proprement."""
+    from app.worker.zerogpu_client import configured
+
+    return configured()
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 

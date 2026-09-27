@@ -15,7 +15,7 @@ from src.config import ROOT, load_config
 from src.hardware import engine_status
 from src.levels import FACE
 
-from . import routes_faces, routes_jobs, routes_models, routes_people, routes_videos
+from . import routes_faces, routes_jobs, routes_models, routes_people, routes_settings, routes_videos
 
 WEB_DIST = ROOT / "app" / "web" / "dist"
 
@@ -41,6 +41,7 @@ app.include_router(routes_faces.router)
 app.include_router(routes_jobs.router)
 app.include_router(routes_models.router)
 app.include_router(routes_people.router)
+app.include_router(routes_settings.router)
 
 
 @app.get("/api/status")
@@ -67,7 +68,13 @@ def status() -> dict:
         "video_ext": cfg.upload.video_ext,
         "sec_per_frame": routes_models.sec_per_frame(FACE),
         "levels": routes_models.levels_status(routes_jobs.AVAILABLE_LEVELS),
-        "gpu": {"configured": routes_jobs.gpu_configured()},
+        "gpu": {
+            "configured": routes_jobs.gpu_configured(),
+            "space": db.get_meta("zerogpu_space") or None,
+            "used_today_s": round(float(db.get_meta(f"zerogpu_used:{time.strftime('%Y-%m-%d')}") or 0)),
+            "free_quota_s": int(cfg.get("zerogpu", {}).get("free_quota_min", 5)) * 60,
+            "sec_per_frame": {lvl: routes_models.sec_per_frame(lvl, "zerogpu") for lvl in ("face", "face_tone")},
+        },
         "example_url": cfg.youtube.example_url,
         "youtube_max_duration_s": cfg.youtube.max_duration_s,
     }

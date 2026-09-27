@@ -131,10 +131,19 @@ export type Status = {
   video_ext: string[];
   sec_per_frame: number;
   levels: Record<Level, LevelStatus>;
-  gpu: { configured: boolean };
+  gpu: {
+    configured: boolean;
+    space: string | null;
+    used_today_s: number;
+    free_quota_s: number;
+    sec_per_frame: Partial<Record<Level, number>>;
+  };
   example_url: string;
   youtube_max_duration_s: number;
 };
+
+export type ZeroGPUSettings = { space: string | null; token_set: boolean; key_set: boolean; configured: boolean };
+export type ZeroGPUTest = { ok: boolean; latency_ms: number; version: string; levels: Level[]; zerogpu: boolean };
 
 export class ApiError extends Error {
   status: number;
@@ -243,6 +252,13 @@ export const api = {
     form.append("consent", "true");
     return upload<{ imported: ImportResult[]; people: Person[] }>("/api/people/photos", form);
   },
+
+  // Moteur : Space ZeroGPU (le jeton et la clé ne reviennent jamais au navigateur)
+  settings: () => request<{ zerogpu: ZeroGPUSettings }>("GET", "/api/settings"),
+  saveZeroGPU: (body: { space: string; token?: string; key?: string }) =>
+    request<{ zerogpu: ZeroGPUSettings }>("PUT", "/api/settings/zerogpu", body),
+  clearZeroGPU: () => request<{ zerogpu: ZeroGPUSettings }>("DELETE", "/api/settings/zerogpu"),
+  testZeroGPU: () => request<ZeroGPUTest>("POST", "/api/settings/zerogpu/test"),
 
   jobs: () => request<Job[]>("GET", "/api/jobs"),
   job: (id: string) => request<Job>("GET", `/api/jobs/${id}`),

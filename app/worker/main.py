@@ -11,9 +11,59 @@ from pathlib import Path
 
 from app import db
 from app.api.routes_faces import load_person_assets
+from app.worker.zerogpu_client import RemoteCancelled, ZeroGPUClient
+from src import media
 from src.config import accelerator
 from src.levels import FACE
-from src.pipeline import Cancelled, FaceMapping, RenderOptions, render
+from src.pipeline import Cancelled, FaceMapping, RenderOptions, RenderStats, assemble, cut, relative_targets, render
+
+
+def remote_payload(params: dict, mappings: list[FaceMapping], start: float, length: float) -> dict:
+    """Ce qui part au Space : empreintes et teint des personnes (pas leurs photos), cibles en temps relatif à l'extrait."""
+    people = {}
+    local = relative_targets(mappings, start, length)
+    items = []
+    for m, fm in zip(params["mappings"], local):
+        pid = m["person"]
+        if pid not in people:
+            people[pid] = {"embedding": fm.person.source.normed_embedding.astype(float).tolist(),
+                           "tone": fm.person.tone.to_dict() if fm.person.tone is not None else None}
+        items.append({"t": fm.target["t"], "box": fm.target["box"], "person": pid, "label": fm.label})
+    return {"level": params.get("level") or FACE, "stabilize": bool(params["stabilize"]), "mappings": items, "people": people}
+
+
+def run_remote(job: dict, source: Path, opts: RenderOptions, mappings: list[FaceMapping], out: Path, progress) -> RenderStats:
+    """Découpe et assemblage sur le PC, remplacement des visages sur le Space ZeroGPU."""
+    stats = RenderStats()
+    t0 = time.perf_counter()
+    progress("cut", 0, 1)
+    segment = cut(source, opts, out)
+    silent = out / "cut_silent.mp4"          # le son ne part pas : il est remis à l'assemblage
+    media.ffmpeg("-i", str(segment.path), "-an", "-c:v", "copy", str(silent))
+    progress("cut", 1, 1)
+
+    payload = remote_payload(job["params"], mappings, opts.start, opts.end - opts.start)
+    client = ZeroGPUClient.from_settings()
+    try:
+        remote = client.swap(silent, payload, out / "swapped.mp4",
+                             on_progress=lambda done, total: progress("swap", done, total),
+                             should_cancel=lambda: db.job_status(job["id"]) == "cancelling")
+    except RemoteCancelled as exc:
+        raise Cancelled() from exc
+    silent.unlink(missing_ok=True)
+    stats.frames, stats.swapped, stats.reused = remote.get("frames", 0), remote.get("swapped", 0), remote.get("reused", 0)
+    stats.warnings = list(remote.get("warnings", []))
+    gpu_seconds = float(remote.get("gpu_seconds", 0))
+    today = time.strftime("%Y-%m-%d")
+    db.set_meta(f"zerogpu_used:{today}", str(float(db.get_meta(f"zerogpu_used:{today}") or 0) + gpu_seconds))
+
+    progress("assemble", 0, 1)
+    assemble(source, segment, out / "swapped.mp4", opts, out / "result.mp4", out)
+    progress("assemble", 1, 1)
+    stats.seconds = time.perf_counter() - t0
+    stats.sec_per_frame = stats.seconds / max(1, stats.frames)
+    stats.sec_per_computed = gpu_seconds / max(1, stats.frames - stats.reused)   # temps GPU = ce qui coûte du quota
+    return stats
 
 
 def run_job(job: dict) -> None:
@@ -50,21 +100,26 @@ def run_job(job: dict) -> None:
         db.update("jobs", job_id, stage=stage, done=done, total=total)
         db.set_meta("worker_heartbeat", str(now))
 
-    stats = render(
-        source=Path(video["source"]),
-        mappings=mappings,
-        opts=opts,
-        work_dir=out,
-        out=out / "result.mp4",
-        progress=progress,
-        preview=out / "preview.jpg",
-    )
+    if params.get("use_gpu"):
+        # Case « Utiliser le GPU » cochée pour CE rendu : calcul sur le Space ZeroGPU, jamais de repli sur le CPU.
+        stats, engine = run_remote(job, Path(video["source"]), opts, mappings, out, progress), "zerogpu"
+    else:
+        stats = render(
+            source=Path(video["source"]),
+            mappings=mappings,
+            opts=opts,
+            work_dir=out,
+            out=out / "result.mp4",
+            progress=progress,
+            preview=out / "preview.jpg",
+        )
+        engine = accelerator()
     (out / "swapped.mp4").unlink(missing_ok=True)
     # Vitesse ramenée à un seul visage et mémorisée par (niveau, moteur), pour que les estimations restent justes
     # (même formule que le frontend : chaque visage en plus ≈ +75 %).
     factor = 1 + 0.75 * max(0, len(mappings) - 1)
     # Par image réellement calculée : les copies sautées ne doivent pas rendre les estimations trop optimistes.
-    db.set_meta(f"spf:{level}:{accelerator()}", str(stats.sec_per_computed / factor))
+    db.set_meta(f"spf:{level}:{engine}", str(stats.sec_per_computed / factor))
     db.update("jobs", job_id, status="done", finished_at=time.time(), sec_per_frame=stats.sec_per_frame,
               warnings=stats.warnings, done=stats.frames, total=stats.frames)
 

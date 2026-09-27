@@ -45,9 +45,11 @@ levels:
   face:
     sec_per_frame: 2.2
     sec_per_frame_gpu: 0.35     # MX450 + Iris Xe (DirectML réparti), mesuré
+    sec_per_frame_zerogpu: 0.08 # temps GPU par image sur ZeroGPU (estimation, recalée après le 1er rendu)
   face_tone:
     sec_per_frame: 2.9          # ≈ visage + 0,4 s de segmentation / recoloriage par visage
     sec_per_frame_gpu: 0.5
+    sec_per_frame_zerogpu: 0.1
     tone_strength_l: 0.5        # part de la luminosité transférée (1 = tout, 0 = garde l'éclairage de la scène)
     tone_smoothing: 0.7         # EMA des stats de teint entre images (anti-scintillement)
 
@@ -84,6 +86,10 @@ proxy:
   max_height: 720
   filmstrip_count: 60
   filmstrip_height: 90
+
+# GPU distant (Space Hugging Face ZeroGPU) : case « Utiliser le GPU » de chaque rendu, jamais activée d'office.
+zerogpu:
+  free_quota_min: 5            # quota quotidien d'un compte gratuit (40 en PRO)
 
 retention_hours: 48
 

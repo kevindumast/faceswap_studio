@@ -38,7 +38,7 @@ def sec_per_frame(level: str, engine: str | None = None) -> float:
         if legacy:
             return float(legacy)
     defaults = load_config().get("levels", {}).get(level, {})
-    key = "sec_per_frame" if engine == "cpu" else "sec_per_frame_gpu"
+    key = {"cpu": "sec_per_frame", "zerogpu": "sec_per_frame_zerogpu"}.get(engine, "sec_per_frame_gpu")
     return float(defaults.get(key) or defaults.get("sec_per_frame", 2.2))
 
 

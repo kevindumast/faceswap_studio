@@ -59,6 +59,23 @@ Revenir au CPU : `.\scripts\activer_gpu.ps1 -Cpu`
 La pastille en haut à droite du site indique le moteur utilisé : « Moteur prêt · Carte graphique · MX450 + Iris Xe ».
 À relancer après une réinstallation des dépendances (`uv pip install -e .`), qui remet la version CPU.
 
+## GPU distant ZeroGPU (optionnel)
+
+Un Space privé sur Hugging Face (GPU 48 Go, 5 min/jour en gratuit, 40 en PRO). Indispensable pour le niveau 4.
+Une fois branché, la case « Utiliser le GPU » apparaît à l'étape Rendu : **décochée par défaut, à cocher à chaque rendu**.
+
+1. Crée un jeton `write` : https://huggingface.co/settings/tokens
+2. Déploie ton Space privé (API et worker peuvent tourner) :
+
+```powershell
+cd C:\Users\kevin.dumast\Documents\behero
+.venv\Scripts\python.exe scripts\deploy_space.py --space ton-pseudo/faceswap-gpu --save
+```
+
+3. Attends la construction (5 à 15 min la première fois), puis dans l'appli : pastille du moteur (en haut) → « Tester la connexion ».
+
+Relancer la même commande met le Space à jour après une modification du code.
+
 ## Arrêter
 
 `Ctrl + C` dans chaque terminal (ou fermer les fenêtres).
