@@ -52,6 +52,13 @@ levels:
     sec_per_frame_zerogpu: 0.1
     tone_strength_l: 0.5        # part de la luminosité transférée (1 = tout, 0 = garde l'éclairage de la scène)
     tone_smoothing: 0.7         # EMA des stats de teint entre images (anti-scintillement)
+  character:                    # niveau 4 : Wan2.2-Animate-14B sur ton 2e Space ZeroGPU (space_character/)
+    max_s: 10                   # durée maximale d'un extrait
+    steps: 6                    # étapes de débruitage (qualité ↔ quota : 20 = qualité officielle, ×3 plus cher)
+    gpu_s_per_second:           # temps GPU par seconde d'extrait, pour 6 étapes (recalé après le 1er rendu)
+      360p: 12
+      480p: 26
+    feather: 0.015              # adoucissement du bord de la zone recollée (fraction de la hauteur)
 
 segment:
   min_s: 5

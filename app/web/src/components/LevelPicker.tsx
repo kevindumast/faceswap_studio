@@ -4,6 +4,7 @@ import { AlertTriangle, Check, Cpu, Download, FlaskConical, Palette, PersonStand
 import { useState, type ReactNode } from "react";
 import { api, type Level, type Status } from "../lib/api";
 import { LEVELS, levelInfo } from "../lib/levels";
+import { openEngineSettings } from "./EngineSettings";
 import { Button, Notice, ProgressBar, cx } from "./ui";
 
 const ICONS: Record<Level, ReactNode> = {
@@ -15,7 +16,6 @@ const ICONS: Record<Level, ReactNode> = {
 
 const COMING: Partial<Record<Level, string>> = {
   head: "Pas encore disponible : la tête complète arrive dans une prochaine étape.",
-  character: "Pas encore disponible : arrive juste après le branchement du GPU ZeroGPU, qui est indispensable à ce niveau.",
 };
 
 export function LevelPicker({ value, onChange, status }: { value: Level; onChange: (l: Level) => void; status?: Status }) {
@@ -136,6 +136,14 @@ export function LevelPicker({ value, onChange, status }: { value: Level; onChang
               ))}
             </ul>
           </div>
+          {shown === "character" && status && !status.gpu.character?.configured && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-raised p-3 ring-1 ring-line sm:col-span-2">
+              <span className="text-[13px]">Ce niveau tourne sur ton 2e Space ZeroGPU, qui n'est pas encore branché (une commande à lancer).</span>
+              <Button variant="primary" size="sm" icon={<Zap className="size-3.5" />} onClick={openEngineSettings}>
+                Brancher le Space du niveau 4
+              </Button>
+            </div>
+          )}
           {st && st.available && !st.ready && (
             <div className="sm:col-span-2">
               {st.installing ? (

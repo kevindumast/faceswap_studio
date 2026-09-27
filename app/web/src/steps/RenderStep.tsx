@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowLeft, ArrowRight, Check, Clapperboard, Cpu, Download, Film, Loader2, Pause, Play, RotateCcw, Scissors, Sparkles, Wand2, X, Zap } from "lucide-react";
 import { useState } from "react";
-import { ApiError, api, type Job, type JobParams, type Level, type Mapping, type Status, type Video } from "../lib/api";
+import { ApiError, api, type Job, type JobParams, type Level, type Mapping, type Resolution, type Status, type Video } from "../lib/api";
 import { levelInfo } from "../lib/levels";
 import { faceIndex, styleOf } from "../lib/people";
 import { cappedFps, duration, seconds, timecode } from "../lib/time";
@@ -96,16 +96,25 @@ function Setup(p: Props) {
   // Le swap domine le temps de calcul : chaque visage remplacé en plus coûte ~75 % d'une passe.
   const swapFactor = 1 + 0.75 * Math.max(0, active.length - 1);
   const spf = p.status?.levels[p.level]?.sec_per_frame ?? p.status?.sec_per_frame ?? 2.2;
-  const gpuConfigured = !!p.status?.gpu.configured;
+  // Niveau 4 : son propre Space (Wan2.2-Animate), une seule personne, durée limitée, résolution au choix.
+  const isCharacter = p.level === "character";
+  const character = p.status?.gpu.character;
+  const [resolution, setResolution] = useState<Resolution>("360p");
+  const maxCharacter = character?.max_s ?? 10;
+  const tooLong = isCharacter && len > maxCharacter + 0.01;
+  const notOne = isCharacter && active.length !== 1;
+  const gpuConfigured = isCharacter ? !!character?.configured : !!p.status?.gpu.configured;
   const blockedByGpu = !!info.gpuOnly && !useGpu;
   // Mode « vidéo complète » : le reste du clip est seulement réencodé (≈ 4× plus vite que le temps réel).
   const fullExtra = p.video.info!.duration * 0.25;
   // ZeroGPU : temps GPU (= quota) par image, + envoi, file d'attente et réveil éventuel du Space.
   const gpuSpf = p.status?.gpu.sec_per_frame?.[p.level] ?? 0.1;
-  const gpuSeconds = frames * gpuSpf * swapFactor;
+  const characterPerS = character?.gpu_s_per_second[resolution] ?? (resolution === "480p" ? 26 : 12);
+  const characterSteps = character?.steps ?? 6;
+  const gpuSeconds = isCharacter ? characterGpuSeconds(len, characterPerS, characterSteps) : frames * gpuSpf * swapFactor;
   const quotaLeft = (p.status?.gpu.free_quota_s ?? 300) - (p.status?.gpu.used_today_s ?? 0);
   const estimate = useGpu
-    ? gpuSeconds + 60 + (output === "full" ? fullExtra : 0)
+    ? gpuSeconds + (isCharacter ? 90 : 60) + (output === "full" ? fullExtra : 0)
     : frames * spf * swapFactor + 15 + (output === "full" ? fullExtra : 0);
   const faceSet = useQuery({ queryKey: ["faceset", p.faceSetId], queryFn: () => api.faceSet(p.faceSetId) });
   // Même requête que l'étape Visages : la recherche du passage est déjà en cache.
@@ -129,6 +138,7 @@ function Setup(p: Props) {
         mappings: active.map(({ t, box, person }) => ({ t, box, person })),
         level: p.level,
         use_gpu: useGpu,
+        ...(isCharacter ? { resolution } : {}),
         limit_fps: highFps && limitFps,
         consent: p.consent,
       }),
@@ -215,7 +225,9 @@ function Setup(p: Props) {
               : `Toute la vidéo (${duration(p.video.info!.duration)}) : seul le passage de ${seconds(len)} est transformé, le reste est simplement recopié autour (≈ +${duration(fullExtra)}).`}
           </p>
           <div className="space-y-3 border-t border-line pt-4">
-            <Switch checked={stabilize} onChange={setStabilize} label="Stabilisation" description="Lisse les tremblements du visage d'une image à l'autre." />
+            {!isCharacter && (
+              <Switch checked={stabilize} onChange={setStabilize} label="Stabilisation" description="Lisse les tremblements du visage d'une image à l'autre." />
+            )}
             <Switch checked={aiLabel} onChange={setAiLabel} label="Étiquette « Contenu modifié par IA »" description="Petite mention en bas à droite, recommandée pour publier." />
             {highFps && (
               <Switch
@@ -229,7 +241,43 @@ function Setup(p: Props) {
               <Notice tone="warn">Plus le rendu est réaliste, plus l'étiquette compte : sans elle, la vidéo peut passer pour vraie une fois partagée.</Notice>
             )}
           </div>
-          <GpuOption checked={useGpu} onChange={setUseGpu} configured={gpuConfigured} required={!!info.gpuOnly} quotaNeeded={gpuSeconds} quotaLeft={quotaLeft} />
+          {isCharacter && (
+            <div className="mt-4 border-t border-line pt-4">
+              <div className="mb-1 text-[13px] font-medium">Qualité de la personne générée</div>
+              <SegmentedControl
+                value={resolution}
+                onChange={setResolution}
+                className="w-full"
+                options={[
+                  { value: "360p", label: "360p · économique" },
+                  { value: "480p", label: "480p · plus net" },
+                ]}
+              />
+              <p className="mt-2 text-[13px] text-muted">
+                La personne est générée en {resolution} puis recollée sur la vidéo : le reste de l'image garde sa netteté.
+                {resolution === "480p" ? " Environ deux fois plus de quota." : ""}
+              </p>
+              {tooLong && (
+                <Notice tone="warn" className="mt-3">
+                  Le niveau 4 est limité à {seconds(maxCharacter)} (quota GPU) : raccourcis le passage ({seconds(len)} actuellement).
+                </Notice>
+              )}
+              {notOne && (
+                <Notice tone="warn" className="mt-3">
+                  Le niveau 4 remplace une seule personne à la fois : garde une seule association à l'étape Visages.
+                </Notice>
+              )}
+            </div>
+          )}
+          <GpuOption
+            checked={useGpu}
+            onChange={setUseGpu}
+            configured={gpuConfigured}
+            required={!!info.gpuOnly}
+            quotaNeeded={gpuSeconds}
+            quotaLeft={quotaLeft}
+            spaceLabel={isCharacter ? "le Space du niveau 4" : undefined}
+          />
           <div className="mt-auto pt-6">
             {p.status && !p.status.worker && (
               <Notice tone="warn" className="mb-4">
@@ -248,16 +296,26 @@ function Setup(p: Props) {
                 </div>
                 <div className="font-mono text-lg tabular">≈ {duration(estimate)}</div>
                 <div className="mt-0.5 font-mono text-[11px] text-faint tabular" title="Images du passage × secondes par image (mesurée sur ta machine) × visages remplacés">
-                  {frames} img × {(useGpu ? gpuSpf : spf).toFixed(useGpu ? 2 : 1).replace(".", ",")} s{useGpu ? " (ZeroGPU)" : ""}{active.length > 1 ? ` × ${swapFactor.toFixed(2).replace(".", ",")} (${active.length} visages)` : ""}
-                  {output === "full" ? ` + ${duration(fullExtra)} recopie` : ""}{useGpu ? " + ~1 min d'envoi" : ""}
+                  {isCharacter ? (
+                    <>
+                      {seconds(len)} × {Math.round(characterPerS)} s de GPU/s ({resolution}, {characterSteps} étapes) + ~1 min 30 d'envoi et de recollage
+                    </>
+                  ) : (
+                    <>
+                      {frames} img × {(useGpu ? gpuSpf : spf).toFixed(useGpu ? 2 : 1).replace(".", ",")} s{useGpu ? " (ZeroGPU)" : ""}
+                      {active.length > 1 ? ` × ${swapFactor.toFixed(2).replace(".", ",")} (${active.length} visages)` : ""}
+                      {useGpu ? " + ~1 min d'envoi" : ""}
+                    </>
+                  )}
+                  {output === "full" ? ` + ${duration(fullExtra)} recopie` : ""}
                 </div>
               </div>
               <Button
                 variant="primary"
                 size="lg"
                 loading={launch.isPending}
-                disabled={!active.length || blockedByGpu}
-                title={blockedByGpu ? "Ce niveau nécessite l'option GPU" : undefined}
+                disabled={!active.length || blockedByGpu || tooLong || notOne}
+                title={blockedByGpu ? "Ce niveau nécessite l'option GPU" : tooLong ? "Passage trop long pour le niveau 4" : notOne ? "Une seule personne au niveau 4" : undefined}
                 onClick={() => launch.mutate()}
                 icon={<Wand2 className="size-4" />}
               >
@@ -271,8 +329,30 @@ function Setup(p: Props) {
   );
 }
 
+/** Temps GPU du niveau 4 : même formule que le Space (45 s de préparation + par seconde d'extrait, pour 6 étapes). */
+function characterGpuSeconds(len: number, perSecond: number, steps: number): number {
+  return 45 + (len * perSecond * steps) / 6;
+}
+
 /** Option GPU : décochée par défaut, grisée tant qu'aucun GPU n'est branché, jamais cochée à la place de l'utilisateur. */
-function GpuOption({ checked, onChange, configured, required, quotaNeeded, quotaLeft }: { checked: boolean; onChange: (v: boolean) => void; configured: boolean; required: boolean; quotaNeeded: number; quotaLeft: number }) {
+function GpuOption({
+  checked,
+  onChange,
+  configured,
+  required,
+  quotaNeeded,
+  quotaLeft,
+  spaceLabel,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  configured: boolean;
+  required: boolean;
+  quotaNeeded: number;
+  quotaLeft: number;
+  /** Space concerné, s'il n'est pas celui des niveaux 1-2 (ex. « le Space du niveau 4 »). */
+  spaceLabel?: string;
+}) {
   return (
     <div className="mt-4 border-t border-line pt-4">
       <label className={cx("flex items-start gap-3", configured ? "cursor-pointer" : "cursor-not-allowed opacity-60")}>
@@ -294,13 +374,15 @@ function GpuOption({ checked, onChange, configured, required, quotaNeeded, quota
               <>
                 ≈ {duration(quotaNeeded)} de GPU sur ton quota (il reste ≈ {duration(Math.max(0, quotaLeft))} aujourd'hui en gratuit). Décoché : calcul sur ce PC.
               </>
+            ) : spaceLabel ? (
+              `Pas encore branché : ${spaceLabel} se crée en une commande (Moteur → Niveau 4).`
             ) : (
               "Aucun GPU ZeroGPU branché : le calcul se fait sur ce PC."
             )}
           </span>
           {!configured && (
             <button type="button" onClick={openEngineSettings} className="mt-1 text-[13px] text-accent underline-offset-2 hover:underline">
-              Brancher ZeroGPU
+              {spaceLabel ? "Brancher le Space du niveau 4" : "Brancher ZeroGPU"}
             </button>
           )}
         </span>

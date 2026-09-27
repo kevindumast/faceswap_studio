@@ -2,6 +2,10 @@
 
 Usage :
   .venv\\Scripts\\python.exe scripts\\deploy_space.py --space ton-pseudo/faceswap-gpu --save
+  .venv\\Scripts\\python.exe scripts\\deploy_space.py --kind character --space ton-pseudo/faceswap-character --save
+
+- --kind faces (défaut) : Space des niveaux 1 et 2 ; --kind character : Space du niveau 4 (personne entière,
+  Wan2.2-Animate-14B, ~57 Go chargés au démarrage). Un compte gratuit peut héberger ces 2 Spaces ZeroGPU.
 
 - Le jeton Hugging Face (droit « write ») est demandé s'il n'est pas passé par --token ou HF_TOKEN.
 - Le Space est créé en PRIVÉ, sur le matériel ZeroGPU ; une clé secrète APP_KEY est générée et enregistrée dans ses secrets.
@@ -34,8 +38,12 @@ setup_tls()  # certificat absent ou proxy d'entreprise : vérification avec le m
 ZEROGPU = "zero-a10g"  # identifiant Hugging Face du matériel ZeroGPU
 
 
-def build_bundle(dst: Path) -> None:
+def build_bundle(dst: Path, kind: str = "faces") -> None:
     """Dossier envoyé au Space : app Gradio + code du pipeline + config GPU (modèles et données dans /tmp)."""
+    if kind == "character":  # autonome : télécharge lui-même le code officiel Wan2.2 et ses poids
+        for name in ("app.py", "targeting.py", "README.md", "requirements.txt", "packages.txt"):
+            shutil.copy2(ROOT / "space_character" / name, dst / name)
+        return
     for name in ("app.py", "README.md", "requirements.txt", "packages.txt"):
         shutil.copy2(ROOT / "space" / name, dst / name)
     shutil.copytree(ROOT / "src", dst / "src", ignore=shutil.ignore_patterns("__pycache__", "*.egg-info"))
@@ -51,6 +59,8 @@ def main() -> None:
     ap.add_argument("--space", required=True, help="identifiant du Space, ex. ton-pseudo/faceswap-gpu")
     ap.add_argument("--token", help="jeton Hugging Face (sinon HF_TOKEN, sinon demandé)")
     ap.add_argument("--save", action="store_true", help="enregistrer les réglages dans l'appli")
+    ap.add_argument("--kind", choices=("faces", "character"), default="faces",
+                    help="faces : niveaux 1-2 (défaut) ; character : niveau 4, personne entière")
     args = ap.parse_args()
 
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.space):
@@ -67,8 +77,7 @@ def main() -> None:
     print(f"Compte Hugging Face : {user}")
 
     db.init()
-    saved_key = db.get_meta("zerogpu_key") if db.get_meta("zerogpu_space") == args.space else None
-    key = saved_key or secrets.token_urlsafe(24)
+    key = db.get_meta("zerogpu_key") or secrets.token_urlsafe(24)   # même clé pour tes deux Spaces
 
     print(f"Space {args.space} (privé, ZeroGPU)…")
     try:
@@ -87,7 +96,7 @@ def main() -> None:
     api.add_space_secret(args.space, "APP_KEY", key, description="Clé partagée avec l'appli Faceswap Studio")
 
     with tempfile.TemporaryDirectory() as tmp:
-        build_bundle(Path(tmp))
+        build_bundle(Path(tmp), args.kind)
         api.upload_folder(repo_id=args.space, repo_type="space", folder_path=tmp,
                           commit_message="Déploiement Faceswap Studio GPU")
     try:
@@ -96,14 +105,18 @@ def main() -> None:
         print(f"! Matériel ZeroGPU refusé : {exc}\n  Vérifie ton compte (e-mail vérifié, plus de 30 jours) ou passe en PRO.")
 
     if args.save:
-        db.set_meta("zerogpu_space", args.space)
+        db.set_meta("zerogpu_character_space" if args.kind == "character" else "zerogpu_space", args.space)
         db.set_meta("zerogpu_token", token)
         db.set_meta("zerogpu_key", key)
         print("✓ Réglages enregistrés dans l'appli.")
     else:
         print(f"Clé APP_KEY à coller dans l'appli (Moteur → ZeroGPU) : {key}")
     print(f"✓ Code envoyé. Construction en cours : https://huggingface.co/spaces/{args.space}")
-    print("  Compte 5 à 15 min au premier déploiement, puis « Tester » dans l'appli (Moteur → ZeroGPU).")
+    if args.kind == "character":
+        print("  Premier démarrage long (installation + ~57 Go de modèle) : compte 20 à 40 min,")
+        print("  puis « Tester » dans l'appli (Moteur → Niveau 4).")
+    else:
+        print("  Compte 5 à 15 min au premier déploiement, puis « Tester » dans l'appli (Moteur → ZeroGPU).")
 
 
 if __name__ == "__main__":

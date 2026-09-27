@@ -1,12 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
-import { Check, Copy, Cpu, ExternalLink, Loader2, PlugZap, Trash2, X, Zap } from "lucide-react";
+import { Check, Copy, Cpu, ExternalLink, Loader2, PersonStanding, PlugZap, Trash2, X, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, type Status } from "../lib/api";
 import { duration } from "../lib/time";
 import { Button, Notice, ProgressBar, cx } from "./ui";
 
 const DEPLOY_CMD = String.raw`.venv\Scripts\python.exe scripts\deploy_space.py --space ton-pseudo/faceswap-gpu --save`;
+const DEPLOY_CHARACTER_CMD = String.raw`.venv\Scripts\python.exe scripts\deploy_space.py --kind character --space ton-pseudo/faceswap-character --save`;
 
 /** Ouvre le panneau depuis n'importe où (ex. le lien « Brancher ZeroGPU » de l'étape Rendu). */
 export const openEngineSettings = () => window.dispatchEvent(new Event("open-engine-settings"));
@@ -19,11 +20,15 @@ export function EngineSettings({ open, onClose, status }: { open: boolean; onClo
   const [space, setSpace] = useState("");
   const [token, setToken] = useState("");
   const [key, setKey] = useState("");
+  const [characterSpace, setCharacterSpace] = useState("");
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (z?.space) setSpace(z.space);
   }, [z?.space]);
+  useEffect(() => {
+    setCharacterSpace(z?.character_space ?? "");
+  }, [z?.character_space]);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -36,16 +41,24 @@ export function EngineSettings({ open, onClose, status }: { open: boolean; onClo
     qc.invalidateQueries({ queryKey: ["status"] });
   };
   const save = useMutation({
-    mutationFn: () => api.saveZeroGPU({ space: space.trim(), ...(token ? { token } : {}), ...(key ? { key } : {}) }),
+    mutationFn: () =>
+      api.saveZeroGPU({
+        space: space.trim(),
+        ...(token ? { token } : {}),
+        ...(key ? { key } : {}),
+        ...(characterSpace.trim() !== (z?.character_space ?? "") ? { character_space: characterSpace.trim() } : {}),
+      }),
     onSuccess: () => {
       setToken("");
       setKey("");
       test.reset();
+      testCharacter.reset();
       refresh();
     },
   });
   const clear = useMutation({ mutationFn: api.clearZeroGPU, onSuccess: refresh });
-  const test = useMutation({ mutationFn: api.testZeroGPU, onSettled: () => qc.invalidateQueries({ queryKey: ["settings"] }) });
+  const test = useMutation({ mutationFn: () => api.testZeroGPU(), onSettled: () => qc.invalidateQueries({ queryKey: ["settings"] }) });
+  const testCharacter = useMutation({ mutationFn: () => api.testZeroGPU("character"), onSettled: () => qc.invalidateQueries({ queryKey: ["settings"] }) });
 
   const engine = status?.engine;
   const used = status?.gpu.used_today_s ?? 0;
@@ -177,6 +190,7 @@ export function EngineSettings({ open, onClose, status }: { open: boolean; onClo
                     {z?.configured && <p className="text-[12px] text-muted">Laisse un champ vide pour garder la valeur enregistrée.</p>}
                     <Field label="Space" value={space} onChange={setSpace} placeholder="ton-pseudo/faceswap-gpu" />
                     <Field label="Jeton Hugging Face" value={token} onChange={setToken} placeholder={z?.token_set ? `${z.token_hint ?? "hf_…"} (inchangé)` : "hf_…"} secret />
+                    <Field label="Space du niveau 4 (optionnel)" value={characterSpace} onChange={setCharacterSpace} placeholder="ton-pseudo/faceswap-character" />
                     <Field label="Clé APP_KEY" value={key} onChange={setKey} placeholder={z?.key_set ? "•••••••• (inchangée)" : "affichée par le script"} secret />
                     <div className="flex flex-wrap gap-2">
                       <Button variant="secondary" size="sm" loading={save.isPending} disabled={!space.trim()} onClick={() => save.mutate()}>
@@ -211,11 +225,90 @@ export function EngineSettings({ open, onClose, status }: { open: boolean; onClo
                 )}
                 {(save.error || test.error || clear.error) && <Notice tone="danger">{(save.error ?? test.error ?? clear.error)!.message}</Notice>}
               </section>
+
+              {/* Niveau 4 : 2e Space, même jeton et même clé */}
+              <section className="space-y-4 border-t border-line pt-5">
+                <div className="flex items-center justify-between">
+                  <h3 className="flex items-center gap-2 font-medium">
+                    <PersonStanding className="size-4 text-warn" /> Niveau 4 · personne entière
+                  </h3>
+                  {z && (
+                    <span
+                      className={cx(
+                        "rounded-md px-1.5 py-0.5 text-[11px] font-medium",
+                        z.character_tested ? "bg-accent-soft text-accent" : z.character_configured ? "bg-warn-soft text-warn" : "bg-overlay text-muted",
+                      )}
+                    >
+                      {z.character_tested ? "Connecté" : z.character_configured ? "Enregistré · à tester" : "Non branché"}
+                    </span>
+                  )}
+                </div>
+                <p className="text-[13px] text-muted">
+                  Un 2e Space privé avec Wan2.2-Animate-14B : remplace toute la personne, habits et gestuelle compris. Environ 2 min de GPU pour 5 s
+                  en 360p (ton quota de {Math.round(quota / 60)} min/jour est partagé avec l'autre Space). Un compte gratuit peut héberger ces 2 Spaces.
+                </p>
+                {z?.character_configured ? (
+                  <dl className="space-y-2 rounded-xl bg-raised p-4 text-[13px] ring-1 ring-line">
+                    <Saved label="Space" value={z.character_space} />
+                    <p className="pt-1 text-[12px] text-faint">Même jeton et même clé APP_KEY que ci-dessus.</p>
+                  </dl>
+                ) : (
+                  <ol className="space-y-3 rounded-xl bg-raised p-4 text-[13px] ring-1 ring-line">
+                    <li>
+                      <span className="font-medium">1.</span> Dans un terminal, depuis le dossier du projet (remplace <span className="font-mono">ton-pseudo</span>, même jeton{" "}
+                      <span className="font-mono">write</span>) :
+                      <Command cmd={DEPLOY_CHARACTER_CMD} />
+                    </li>
+                    <li>
+                      <span className="font-medium">2.</span> Le premier démarrage est long (installation + 57 Go de modèle) : compte 20 à 40 min, puis « Tester ».
+                    </li>
+                  </ol>
+                )}
+                {z?.character_configured && (
+                  <div className="space-y-3">
+                    <Button variant="secondary" size="md" loading={testCharacter.isPending} onClick={() => testCharacter.mutate()} icon={<PlugZap className="size-4" />}>
+                      Tester le Space du niveau 4
+                    </Button>
+                    {testCharacter.data && (
+                      <Notice tone="info">
+                        <span className="text-accent">✓ Space joignable</span> en {testCharacter.data.latency_ms} ms · version {testCharacter.data.version}
+                        {!testCharacter.data.zerogpu && " · (tourne hors ZeroGPU)"}
+                      </Notice>
+                    )}
+                    {testCharacter.isPending && (
+                      <p className="flex items-center gap-2 text-[12px] text-muted">
+                        <Loader2 className="size-3.5 animate-spin" /> S'il dormait, le Space recharge son modèle : jusqu'à plusieurs minutes.
+                      </p>
+                    )}
+                    {testCharacter.error && <Notice tone="danger">{testCharacter.error.message}</Notice>}
+                  </div>
+                )}
+              </section>
             </div>
           </motion.aside>
         </>
       )}
     </AnimatePresence>
+  );
+}
+
+function Command({ cmd }: { cmd: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="mt-1.5 flex items-start gap-2 rounded-lg bg-bg p-2 ring-1 ring-line">
+      <code className="flex-1 font-mono text-[11px] break-all text-fg">{cmd}</code>
+      <button
+        onClick={() => {
+          void navigator.clipboard.writeText(cmd);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        }}
+        aria-label="Copier la commande"
+        className="text-muted hover:text-fg"
+      >
+        {copied ? <Check className="size-3.5 text-accent" /> : <Copy className="size-3.5" />}
+      </button>
+    </div>
   );
 }
 

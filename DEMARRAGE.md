@@ -76,6 +76,21 @@ cd C:\Users\kevin.dumast\Documents\behero
 
 Relancer la même commande met le Space à jour après une modification du code.
 
+### Niveau 4 · personne entière (2e Space)
+
+Le niveau 4 (corps, habits et gestuelle remplacés) tourne sur un **second** Space privé, avec Wan2.2-Animate-14B.
+Un compte gratuit peut héberger ces 2 Spaces ; ils partagent le même jeton, la même clé et le même quota quotidien.
+
+```powershell
+.venv\Scripts\python.exe scripts\deploy_space.py --kind character --space ton-pseudo/faceswap-character --save
+```
+
+- Premier démarrage long : installation + ~57 Go de modèle, compter **20 à 40 min**. Puis Moteur → « Tester le Space du niveau 4 ».
+- Coût : ≈ 2 min de GPU pour 5 s en 360p (≈ 2 clips par jour en gratuit), environ le double en 480p. 10 s maximum par rendu.
+- Pour un bon résultat : une **photo en pied** de la personne (habits visibles) dans la bibliothèque, et une seule personne
+  associée à l'étape Visages.
+- Après une longue inactivité, le Space s'endort : le premier rendu suivant attend qu'il recharge son modèle.
+
 ## Arrêter
 
 `Ctrl + C` dans chaque terminal (ou fermer les fenêtres).

@@ -21,7 +21,7 @@ from .common import get_or_404, not_found
 from .routes_faces import person_ids
 
 # Niveaux livrés à ce stade (phase A) ; le niveau 3 et le niveau 4 arrivent dans les phases suivantes.
-AVAILABLE_LEVELS = (FACE, FACE_TONE)
+AVAILABLE_LEVELS = (FACE, FACE_TONE, CHARACTER)
 
 
 def output_fps(info: dict, limit: bool) -> float:
@@ -32,11 +32,11 @@ def output_fps(info: dict, limit: bool) -> float:
     return float(Fraction(fps_str))
 
 
-def gpu_configured() -> bool:
-    """ZeroGPU branché (Space + clé) ? Sinon l'option GPU est refusée proprement."""
-    from app.worker.zerogpu_client import configured
+def gpu_configured(level: str = FACE) -> bool:
+    """ZeroGPU branché (Space + clé) pour ce niveau ? Sinon l'option GPU est refusée proprement."""
+    from app.worker.zerogpu_client import character_configured, configured
 
-    return configured()
+    return character_configured() if level == CHARACTER else configured()
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -68,12 +68,17 @@ class JobIn(BaseModel):
     consent: bool = False
 
 
-def check_level(level: str, use_gpu: bool, active_mappings: int) -> None:
+def check_level(level: str, use_gpu: bool, active_mappings: int, length: float = 0.0) -> None:
     """Refuse ce qui ne peut pas tourner, sans jamais basculer d'un moteur à l'autre à la place de l'utilisateur."""
     if level == CHARACTER and not use_gpu:
         raise HTTPException(422, "Le niveau 4 (personne entière) nécessite l'option GPU.")
-    if use_gpu and not gpu_configured():
+    if level == CHARACTER and not gpu_configured(CHARACTER):
+        raise HTTPException(422, "Le Space du niveau 4 n'est pas branché : Moteur → Niveau 4 (deploy_space.py --kind character).")
+    if use_gpu and level != CHARACTER and not gpu_configured():
         raise HTTPException(422, "Aucun GPU ZeroGPU n'est branché : décoche l'option GPU ou configure-le dans « Moteur ».")
+    max_s = float(load_config().get("levels", {}).get(CHARACTER, {}).get("max_s", 10))
+    if level == CHARACTER and length > max_s + 0.01:
+        raise HTTPException(422, f"Le niveau 4 est limité à {max_s:g} s d'extrait (quota GPU) : raccourcis le passage.")
     if level not in AVAILABLE_LEVELS:
         raise HTTPException(422, "Ce niveau n'est pas encore disponible.")
     if level == CHARACTER and active_mappings != 1:
@@ -150,7 +155,7 @@ def create_job(body: JobIn) -> dict:
     unknown = {m.person for m in body.mappings} - known
     if unknown:
         raise HTTPException(422, f"Personne(s) inconnue(s) : {', '.join(sorted(unknown))}.")
-    check_level(body.level, body.use_gpu, len(body.mappings))
+    check_level(body.level, body.use_gpu, len(body.mappings), length)
 
     job_id = db.new_id()
     params = body.model_dump(exclude={"video_id", "face_set_id", "consent"})

@@ -13,8 +13,9 @@ from app import db
 from app.api.routes_faces import load_person_assets
 from app.worker.zerogpu_client import RemoteCancelled, ZeroGPUClient
 from src import media
-from src.config import accelerator
-from src.levels import FACE
+from src.character import choose_reference, recompose
+from src.config import accelerator, load_config
+from src.levels import CHARACTER, FACE
 from src.pipeline import Cancelled, FaceMapping, Paused, RenderOptions, RenderStats, assemble, cut, relative_targets, render
 
 
@@ -66,6 +67,57 @@ def run_remote(job: dict, source: Path, opts: RenderOptions, mappings: list[Face
     return stats
 
 
+def run_character(job: dict, source: Path, opts: RenderOptions, mapping: FaceMapping, out: Path, progress) -> RenderStats:
+    """Niveau 4 : découpe et assemblage sur le PC, personne entière générée sur le Space « niveau 4 »."""
+    params = job["params"]
+    ccfg = load_config().levels.character
+    stats = RenderStats()
+    t0 = time.perf_counter()
+    progress("cut", 0, 1)
+    segment = cut(source, opts, out)
+    silent = out / "cut_silent.mp4"          # le son ne part pas : il est remis à l'assemblage
+    media.ffmpeg("-i", str(segment.path), "-an", "-c:v", "copy", str(silent))
+    reference = choose_reference(mapping.person.photos)
+    if not reference.full_body:
+        stats.warnings.append("Pas de photo en pied pour cette personne : le corps et les habits ont été inventés. "
+                              "Ajoute une photo en pied dans la bibliothèque pour un meilleur résultat.")
+    progress("cut", 1, 1)
+
+    local = relative_targets([mapping], opts.start, opts.end - opts.start)[0]
+    payload = {"t": local.target["t"], "box": local.target["box"], "resolution": params.get("resolution", "360p"),
+               "steps": int(ccfg.get("steps", 6)), "seed": 42}
+    client = ZeroGPUClient.from_settings("character")
+    generated, mask = out / "generated.mp4", out / "generated_mask.mp4"
+    try:
+        remote = client.replace(silent, reference.path, payload, generated, mask,
+                                on_progress=lambda done, total: progress("swap", done, total),
+                                should_cancel=lambda: db.job_status(job["id"]) == "cancelling")
+    except RemoteCancelled as exc:
+        raise Cancelled() from exc
+    silent.unlink(missing_ok=True)
+    gpu_seconds = float(remote.get("gpu_seconds", 0))
+    today = time.strftime("%Y-%m-%d")
+    db.set_meta(f"zerogpu_used:{today}", str(float(db.get_meta(f"zerogpu_used:{today}") or 0) + gpu_seconds))
+    stats.warnings += list(remote.get("warnings", []))
+
+    progress("assemble", 0, 1)
+    rcfg = load_config().render
+    stats.frames = recompose(generated, mask, segment.path, out / "swapped.mp4", segment.fps_str, int(rcfg.crf),
+                             str(rcfg.preset), float(ccfg.get("feather", 0.015)))
+    stats.swapped = stats.frames
+    assemble(source, segment, out / "swapped.mp4", opts, out / "result.mp4", out)
+    for f in (generated, mask):
+        f.unlink(missing_ok=True)
+    progress("assemble", 1, 1)
+    stats.seconds = time.perf_counter() - t0
+    stats.sec_per_frame = stats.seconds / max(1, stats.frames)
+    stats.sec_per_computed = gpu_seconds / max(1, stats.frames)
+    # Temps GPU réel par seconde d'extrait, ramené à 6 étapes : recale l'estimation affichée avant le rendu.
+    length = max(0.1, opts.end - opts.start)
+    db.set_meta(f"character_gpu_s:{payload['resolution']}", str(max(1.0, (gpu_seconds - 45) / length * 6 / payload["steps"])))
+    return stats
+
+
 def run_job(job: dict) -> None:
     job_id = job["id"]
     out = db.folder("jobs", job_id)
@@ -103,7 +155,10 @@ def run_job(job: dict) -> None:
         db.update("jobs", job_id, stage=stage, done=done, total=total)
         db.set_meta("worker_heartbeat", str(now))
 
-    if params.get("use_gpu"):
+    if level == CHARACTER:
+        # Niveau 4 : uniquement sur le Space « niveau 4 » (la case GPU est obligatoire, vérifiée à la création).
+        stats, engine = run_character(job, Path(video["source"]), opts, mappings[0], out, progress), "zerogpu"
+    elif params.get("use_gpu"):
         # Case « Utiliser le GPU » cochée pour CE rendu : calcul sur le Space ZeroGPU, jamais de repli sur le CPU.
         stats, engine = run_remote(job, Path(video["source"]), opts, mappings, out, progress), "zerogpu"
     else:

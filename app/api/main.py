@@ -74,6 +74,7 @@ def status() -> dict:
             "used_today_s": round(float(db.get_meta(f"zerogpu_used:{time.strftime('%Y-%m-%d')}") or 0)),
             "free_quota_s": int(cfg.get("zerogpu", {}).get("free_quota_min", 5)) * 60,
             "sec_per_frame": {lvl: routes_models.sec_per_frame(lvl, "zerogpu") for lvl in ("face", "face_tone")},
+            "character": routes_models.character_status(),
         },
         "example_url": cfg.youtube.example_url,
         "youtube_max_duration_s": cfg.youtube.max_duration_s,

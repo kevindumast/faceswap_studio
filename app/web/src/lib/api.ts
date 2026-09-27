@@ -90,9 +90,12 @@ export type JobParams = {
   target?: Target | null;
   level: Level;
   use_gpu: boolean;
-  resolution?: "360p" | "480p";
+  resolution?: Resolution;
   limit_fps?: boolean;
 };
+
+/** Niveau 4 : résolution à laquelle la personne est générée sur le Space (puis recollée sur la vidéo). */
+export type Resolution = "360p" | "480p";
 
 export type Job = {
   id: string;
@@ -139,6 +142,8 @@ export type Status = {
     used_today_s: number;
     free_quota_s: number;
     sec_per_frame: Partial<Record<Level, number>>;
+    /** Niveau 4 : Space dédié (Wan2.2-Animate) et de quoi estimer son temps de GPU. */
+    character: { configured: boolean; space: string | null; max_s: number; steps: number; gpu_s_per_second: Record<Resolution, number> };
   };
   example_url: string;
   youtube_max_duration_s: number;
@@ -153,6 +158,10 @@ export type ZeroGPUSettings = {
   configured: boolean;
   /** Dernier test de connexion réussi avec ces réglages. */
   tested: boolean;
+  /** Space du niveau 4 (même jeton, même clé). */
+  character_space: string | null;
+  character_configured: boolean;
+  character_tested: boolean;
 };
 export type ZeroGPUTest = { ok: boolean; latency_ms: number; version: string; levels: Level[]; zerogpu: boolean };
 
@@ -266,10 +275,11 @@ export const api = {
 
   // Moteur : Space ZeroGPU (le jeton et la clé ne reviennent jamais au navigateur)
   settings: () => request<{ zerogpu: ZeroGPUSettings }>("GET", "/api/settings"),
-  saveZeroGPU: (body: { space: string; token?: string; key?: string }) =>
+  saveZeroGPU: (body: { space: string; token?: string; key?: string; character_space?: string }) =>
     request<{ zerogpu: ZeroGPUSettings }>("PUT", "/api/settings/zerogpu", body),
   clearZeroGPU: () => request<{ zerogpu: ZeroGPUSettings }>("DELETE", "/api/settings/zerogpu"),
-  testZeroGPU: () => request<ZeroGPUTest>("POST", "/api/settings/zerogpu/test"),
+  testZeroGPU: (kind: "faces" | "character" = "faces") =>
+    request<ZeroGPUTest>("POST", `/api/settings/zerogpu/test${kind === "character" ? "?kind=character" : ""}`),
 
   jobs: () => request<Job[]>("GET", "/api/jobs"),
   job: (id: string) => request<Job>("GET", `/api/jobs/${id}`),
