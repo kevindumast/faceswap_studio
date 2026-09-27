@@ -11,7 +11,7 @@ from pathlib import Path
 
 from app import db
 from app.api.routes_faces import load_person_assets
-from app.worker.zerogpu_client import RemoteCancelled, ZeroGPUClient
+from app.worker.zerogpu_client import RemoteCancelled, ZeroGPUClient, wait_until_ready
 from src import media
 from src.character import choose_reference, recompose
 from src.config import accelerator, load_config
@@ -33,6 +33,29 @@ def remote_payload(params: dict, mappings: list[FaceMapping], start: float, leng
     return {"level": params.get("level") or FACE, "stabilize": bool(params["stabilize"]), "mappings": items, "people": people}
 
 
+# Étapes annoncées par le Space du niveau 4 (desc de sa progression) → étapes affichées dans l'appli.
+CHARACTER_STEPS = {"squelette": "pose", "silhouette": "mask", "génération": "generate"}
+
+
+def remote_stages(progress, steps: dict[str, str] | None = None):
+    """Relaie les étapes d'un appel au Space : file d'attente, attente d'un GPU, et (niveau 4) ses propres étapes."""
+
+    def on_stage(stage: str, done: int, total: int, desc: str | None) -> None:
+        if stage == "progress":
+            if steps and desc in steps:
+                progress(steps[desc], done, total)
+        else:
+            progress(stage, done, total)
+
+    return on_stage
+
+
+def wake_space(kind: str, job_id: str, progress) -> None:
+    """Réveille le Space s'il dort et attend qu'il soit prêt ; étape « wake » : secondes écoulées / durée typique."""
+    wait_until_ready(kind, on_wait=lambda elapsed, expected: progress("wake", int(elapsed), int(expected)),
+                     should_cancel=lambda: db.job_status(job_id) == "cancelling")
+
+
 def run_remote(job: dict, source: Path, opts: RenderOptions, mappings: list[FaceMapping], out: Path, progress) -> RenderStats:
     """Découpe et assemblage sur le PC, remplacement des visages sur le Space ZeroGPU."""
     stats = RenderStats()
@@ -44,11 +67,13 @@ def run_remote(job: dict, source: Path, opts: RenderOptions, mappings: list[Face
     progress("cut", 1, 1)
 
     payload = remote_payload(job["params"], mappings, opts.start, opts.end - opts.start)
-    client = ZeroGPUClient.from_settings()
     try:
+        wake_space("faces", job["id"], progress)
+        client = ZeroGPUClient.from_settings()
         remote = client.swap(silent, payload, out / "swapped.mp4",
                              on_progress=lambda done, total: progress("swap", done, total),
-                             should_cancel=lambda: db.job_status(job["id"]) == "cancelling")
+                             should_cancel=lambda: db.job_status(job["id"]) == "cancelling",
+                             on_stage=remote_stages(progress))
     except RemoteCancelled as exc:
         raise Cancelled() from exc
     silent.unlink(missing_ok=True)
@@ -86,12 +111,13 @@ def run_character(job: dict, source: Path, opts: RenderOptions, mapping: FaceMap
     local = relative_targets([mapping], opts.start, opts.end - opts.start)[0]
     payload = {"t": local.target["t"], "box": local.target["box"], "resolution": params.get("resolution", "360p"),
                "steps": int(ccfg.get("steps", 6)), "seed": 42}
-    client = ZeroGPUClient.from_settings("character")
     generated, mask = out / "generated.mp4", out / "generated_mask.mp4"
     try:
+        wake_space("character", job["id"], progress)
+        client = ZeroGPUClient.from_settings("character")
         remote = client.replace(silent, reference.path, payload, generated, mask,
-                                on_progress=lambda done, total: progress("swap", done, total),
-                                should_cancel=lambda: db.job_status(job["id"]) == "cancelling")
+                                should_cancel=lambda: db.job_status(job["id"]) == "cancelling",
+                                on_stage=remote_stages(progress, CHARACTER_STEPS))
     except RemoteCancelled as exc:
         raise Cancelled() from exc
     silent.unlink(missing_ok=True)

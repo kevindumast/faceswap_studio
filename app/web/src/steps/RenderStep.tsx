@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowLeft, ArrowRight, Check, Clapperboard, Cpu, Download, Film, Loader2, Pause, Play, RotateCcw, Scissors, Sparkles, Wand2, X, Zap } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ApiError, api, type Job, type JobParams, type Level, type Mapping, type Resolution, type Status, type Video } from "../lib/api";
 import { levelInfo } from "../lib/levels";
 import { faceIndex, styleOf } from "../lib/people";
@@ -9,6 +9,7 @@ import { cappedFps, duration, seconds, timecode } from "../lib/time";
 import { Button, Card, Notice, ProgressBar, SectionTitle, SegmentedControl, Switch, cx } from "../components/ui";
 import { Compare } from "../components/Compare";
 import { openEngineSettings } from "../components/EngineSettings";
+import { chrono } from "../components/SpaceStatus";
 import type { Selection } from "../components/trimmer/Trimmer";
 import { PersonBadge } from "./FacesStep";
 
@@ -410,19 +411,103 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-const STAGES: { key: Job["stage"]; label: string }[] = [
+type Stage = { key: Job["stage"]; label: string };
+
+const STAGES: Stage[] = [
   { key: "cut", label: "Découpe" },
   { key: "swap", label: "Remplacement du visage" },
   { key: "assemble", label: "Assemblage + son" },
 ];
 
+/** Rendu sur ZeroGPU : réveil éventuel du Space, file du Space, attente d'un GPU, puis le calcul. */
+const REMOTE_WAIT: Stage[] = [
+  { key: "wake", label: "Réveil du Space" },
+  { key: "queue", label: "File d'attente du Space" },
+  { key: "gpu", label: "En attente d'un GPU" },
+];
+
+const REMOTE_STAGES: Stage[] = [STAGES[0], ...REMOTE_WAIT, { key: "swap", label: "Remplacement du visage (ZeroGPU)" }, STAGES[2]];
+
+const CHARACTER_STAGES: Stage[] = [
+  STAGES[0],
+  ...REMOTE_WAIT,
+  { key: "pose", label: "Squelette et visage" },
+  { key: "mask", label: "Silhouette" },
+  { key: "generate", label: "Génération de la personne" },
+  { key: "assemble", label: "Recollage + son" },
+];
+
+function stagesOf(j: Job): Stage[] {
+  if (j.params.level === "character") return CHARACTER_STAGES;
+  return j.params.use_gpu ? REMOTE_STAGES : STAGES;
+}
+
 function overall(j: Job): number {
   if (j.status === "queued") return 0;
-  if (j.stage === "cut") return 0.03;
-  if (j.stage === "swap") return 0.05 + 0.9 * (j.total ? j.done / j.total : 0);
-  if (j.stage === "assemble") return 0.97;
-  return 0;
+  const frac = j.total ? j.done / j.total : 0;
+  switch (j.stage) {
+    case "cut":
+      return 0.03;
+    case "wake":
+      return 0.04;
+    case "queue":
+      return 0.05;
+    case "gpu":
+      return 0.06;
+    case "swap":
+      return j.params.use_gpu ? 0.07 + 0.88 * frac : 0.05 + 0.9 * frac;
+    case "pose":
+    case "mask":
+    case "generate":
+      return 0.07 + 0.88 * frac; // progression unique du Space niveau 4, en ‰
+    case "assemble":
+      return 0.97;
+    default:
+      return 0;
+  }
 }
+
+/** Secondes passées dans l'étape en cours (mesurées dans le navigateur, depuis le dernier changement d'étape). */
+function useStageClock(stage: Job["stage"]): number {
+  const [since, setSince] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => setSince(Date.now()), [stage]);
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return Math.max(0, (now - since) / 1000);
+}
+
+/** Détail affiché à droite de l'étape active. */
+function stageDetail(j: Job, inStage: number): string | null {
+  switch (j.stage) {
+    case "wake":
+      return `${chrono(j.done + inStage)} / ≈ ${duration(j.total)}`;
+    case "queue":
+      return j.total ? `${j.done + 1}ᵉ sur ${j.total}` : chrono(inStage);
+    case "gpu":
+      return chrono(inStage);
+    case "swap":
+      return `${j.done}/${j.total}`;
+    case "pose":
+    case "mask":
+    case "generate":
+      return j.total ? `${Math.round((j.done / j.total) * 100)} %` : null;
+    default:
+      return null;
+  }
+}
+
+const REMOTE_HINT: Partial<Record<NonNullable<Job["stage"]>, string>> = {
+  wake: "Le Space dormait : il recharge son modèle (≈ 3 min, ou 20 à 40 min pour le niveau 4). Aucun quota consommé pendant l'attente.",
+  queue: "Ton rendu attend son tour sur ton Space.",
+  gpu: "Le calcul est lancé : ZeroGPU attribue un GPU (file partagée avec les autres utilisateurs de Hugging Face).",
+  pose: "Calcul sur ZeroGPU : repérage du squelette et du visage de la personne choisie.",
+  mask: "Calcul sur ZeroGPU : découpe de sa silhouette.",
+  generate: "Calcul sur ZeroGPU : la personne de ta photo est générée à sa place.",
+  swap: "Calcul sur ZeroGPU : remplacement des visages.",
+};
 
 /** Rendu en pause : ce qui est déjà calculé est gardé, la reprise repart à la même image. */
 function PausedView({ job, video }: { job: Job; video: Video }) {
@@ -505,9 +590,13 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
   const cancel = useMutation({ mutationFn: () => api.cancelJob(job.id), onSuccess: (j) => qc.setQueryData(["job", j.id], j) });
   const pause = useMutation({ mutationFn: () => api.pauseJob(job.id), onSuccess: (j) => qc.setQueryData(["job", j.id], j) });
   const frac = overall(job);
-  const stageIdx = STAGES.findIndex((s) => s.key === job.stage);
+  const stages = stagesOf(job);
+  const stageIdx = stages.findIndex((s) => s.key === job.stage);
   const queued = job.status === "queued";
-  const hasPreview = job.stage === "swap" || job.stage === "assemble";
+  const remote = job.params.use_gpu;
+  // Aperçu en direct seulement pour un rendu sur ce PC (le Space ne renvoie que le résultat final).
+  const hasPreview = !remote && (job.stage === "swap" || job.stage === "assemble");
+  const inStage = useStageClock(job.stage);
   const info = video.info!;
 
   return (
@@ -547,9 +636,13 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
         <div className="relative overflow-hidden rounded-[var(--radius-card)] bg-black ring-1 ring-line" style={{ aspectRatio: `${info.width} / ${info.height}` }}>
           {hasPreview && <img src={`${job.preview_url}?v=${job.done}`} alt="Dernière image calculée" className="absolute inset-0 size-full object-contain" />}
           {!hasPreview && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-muted">
-              <Clapperboard className="size-8 animate-pulse" />
-              <span className="text-sm">{queued ? "En attente du worker" : "Préparation de l'extrait"}</span>
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center text-muted">
+              {remote && !queued && job.stage !== "cut" ? <Zap className="size-8 animate-pulse text-warn" /> : <Clapperboard className="size-8 animate-pulse" />}
+              <span className="text-sm text-fg">
+                {queued ? "En attente du worker" : stageIdx >= 0 && job.stage !== "cut" ? stages[stageIdx].label : "Préparation de l'extrait"}
+                {!queued && stageDetail(job, inStage) ? <span className="ml-2 font-mono text-muted tabular">{stageDetail(job, inStage)}</span> : null}
+              </span>
+              {remote && !queued && job.stage && REMOTE_HINT[job.stage] && <span className="max-w-md text-[13px]">{REMOTE_HINT[job.stage]}</span>}
             </div>
           )}
           {hasPreview && (
@@ -567,7 +660,7 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
           <ProgressBar value={frac} className="mt-4 h-2" />
 
           <ol className="mt-6 space-y-1">
-            {STAGES.map((s, i) => {
+            {stages.map((s, i) => {
               const state = queued || i > stageIdx ? "todo" : i < stageIdx ? "done" : "active";
               return (
                 <li key={s.key} className={cx("flex items-center gap-3 rounded-lg px-2 py-2 text-sm", state === "active" && "bg-raised")}>
@@ -582,7 +675,10 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
                     {state === "done" ? <Check className="size-3.5" strokeWidth={3} /> : state === "active" ? <Loader2 className="size-3.5 animate-spin" /> : i + 1}
                   </span>
                   <span className={cx(state === "todo" ? "text-faint" : "text-fg")}>{s.label}</span>
-                  {s.key === "swap" && state !== "todo" && (
+                  {state === "active" && stageDetail(job, inStage) && (
+                    <span className="ml-auto font-mono text-[12px] text-muted tabular">{stageDetail(job, inStage)}</span>
+                  )}
+                  {state === "done" && s.key === "swap" && !remote && (
                     <span className="ml-auto font-mono text-[12px] text-muted tabular">
                       {job.done}/{job.total}
                     </span>
@@ -598,8 +694,10 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
               <div className="font-mono tabular">{job.elapsed ? duration(job.elapsed) : "—"}</div>
             </div>
             <div>
-              <div className="text-faint">Vitesse</div>
-              <div className="font-mono tabular">{job.elapsed && job.done ? `${(job.elapsed / job.done).toFixed(1).replace(".", ",")} s/img` : "—"}</div>
+              <div className="text-faint">{remote ? "Moteur" : "Vitesse"}</div>
+              <div className="font-mono tabular">
+                {remote ? "ZeroGPU" : job.elapsed && job.done ? `${(job.elapsed / job.done).toFixed(1).replace(".", ",")} s/img` : "—"}
+              </div>
             </div>
           </div>
         </Card>

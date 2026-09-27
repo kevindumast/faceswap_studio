@@ -108,7 +108,8 @@ export type Job = {
   status: "queued" | "running" | "cancelling" | "cancelled" | "done" | "error" | "pausing" | "paused";
   /** false pour ZeroGPU : le Space calcule tout l'extrait d'un coup. */
   pausable: boolean;
-  stage: "cut" | "swap" | "assemble" | null;
+  /** Rendu distant : wake (secondes écoulées / durée typique), queue (rang / taille), gpu, puis étapes du Space. */
+  stage: "cut" | "wake" | "queue" | "gpu" | "swap" | "pose" | "mask" | "generate" | "assemble" | null;
   done: number;
   total: number;
   elapsed: number | null;
@@ -165,6 +166,17 @@ export type ZeroGPUSettings = {
   character_space: string | null;
   character_configured: boolean;
   character_tested: boolean;
+};
+export type SpaceKind = "faces" | "character";
+/** État d'un Space lu chez Hugging Face (sans quota) ; waking_since = début du réveil (secondes epoch). */
+export type SpaceState = {
+  space: string | null;
+  phase: "ready" | "starting" | "asleep" | "error" | "unknown" | "unconfigured";
+  stage: string | null;
+  hardware: string | null;
+  error: string | null;
+  waking_since: number | null;
+  expected_s: number;
 };
 export type ZeroGPUTest = { ok: boolean; latency_ms: number; version: string; levels: Level[]; zerogpu: boolean };
 
@@ -285,6 +297,8 @@ export const api = {
   saveZeroGPU: (body: { space: string; token?: string; key?: string; character_space?: string }) =>
     request<{ zerogpu: ZeroGPUSettings }>("PUT", "/api/settings/zerogpu", body),
   clearZeroGPU: () => request<{ zerogpu: ZeroGPUSettings }>("DELETE", "/api/settings/zerogpu"),
+  spaceState: (kind: SpaceKind) => request<SpaceState>("GET", `/api/settings/zerogpu/state?kind=${kind}`),
+  wakeSpace: (kind: SpaceKind) => request<SpaceState>("POST", `/api/settings/zerogpu/wake?kind=${kind}`),
   testZeroGPU: (kind: "faces" | "character" = "faces") =>
     request<ZeroGPUTest>("POST", `/api/settings/zerogpu/test${kind === "character" ? "?kind=character" : ""}`),
 

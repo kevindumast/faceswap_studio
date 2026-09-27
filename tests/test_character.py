@@ -225,16 +225,25 @@ def test_worker_level4_end_to_end_with_fake_space(sample_video, tmp_path, monkey
     sent = {}
 
     class FakeSpace:
-        def replace(self, clip, reference, payload, out, mask_out, on_progress=None, should_cancel=None):
+        def replace(self, clip, reference, payload, out, mask_out, on_progress=None, should_cancel=None, on_stage=None):
             sent.update(payload=payload, clip=media.probe(clip), reference=reference)
+            on_stage("queue", 1, 2, None)                     # 2e dans la file du Space
+            on_stage("gpu", 0, 0, None)                       # calcul lancé, en attente d'un GPU
+            on_stage("progress", 500, 1000, "génération")     # étape annoncée par le Space
             _solid(out, (0, 0, 255), (320, 176), "30", 6.0)
             _solid(mask_out, (255, 255, 255), (320, 176), "30", 6.0, right_half=True)
-            on_progress(500, 1000)
             return {"frames": 180, "gpu_seconds": 120.0, "warnings": ["test"]}
 
     photo = tmp_path / "moi.jpg"
     photo.write_bytes(b"jpg")
     monkeypatch.setattr(worker.ZeroGPUClient, "from_settings", classmethod(lambda cls, kind="faces": FakeSpace()))
+    woken = []
+
+    def fake_wait(kind, on_wait, should_cancel=None, poll=10.0):
+        woken.append(kind)
+        on_wait(12.4, 1800)                                   # Space endormi : 12 s de réveil sur ~30 min
+
+    monkeypatch.setattr(worker, "wait_until_ready", fake_wait)
     monkeypatch.setattr(worker, "choose_reference", lambda photos: Reference(photos[0], 0.4))   # portrait seulement
     person = PersonAssets(source=SourceFace(np.ones(512, np.float32) / np.sqrt(512)), photos=[photo])
     mapping = FaceMapping(person, target={"t": 3.0, "box": [0.4, 0.1, 0.6, 0.4]}, label="Visage 1")
@@ -249,5 +258,94 @@ def test_worker_level4_end_to_end_with_fake_space(sample_video, tmp_path, monkey
     result = media.probe(out / "result.mp4")
     assert result.duration == pytest.approx(6.0, abs=0.1) and result.has_audio and (result.width, result.fps) == (640, 25)
     assert stats.frames == 150 and "test" in stats.warnings and any("photo en pied" in w for w in stats.warnings)
-    assert ("swap", 500, 1000) in progress
+    assert woken == ["character"]
+    stages = [a for a in progress if a[0] in ("wake", "queue", "gpu", "generate")]
+    assert stages == [("wake", 12, 1800), ("queue", 1, 2), ("gpu", 0, 0), ("generate", 500, 1000)]
     assert not (out / "generated.mp4").exists()
+
+
+# --- Réveil et état du Space (faux Hugging Face) -------------------------------------------------------------------
+
+class _FakeHf:
+    """Suite d'états renvoyés par get_space_runtime ; restart_space enregistré."""
+
+    def __init__(self, stages):
+        self.stages, self.restarts = list(stages), []
+
+    def __call__(self, token=None):
+        return self
+
+    def get_space_runtime(self, space):
+        stage = self.stages.pop(0) if len(self.stages) > 1 else self.stages[0]
+        return SimpleNamespace(stage=stage, hardware=None, raw={"errorMessage": "OOM" if "ERROR" in stage else None})
+
+    def restart_space(self, space):
+        self.restarts.append(space)
+
+
+@pytest.fixture
+def spaces_configured():
+    from app import db
+    from app.worker import zerogpu_client as zg
+
+    for k, v in (("zerogpu_space", "kevin/gpu"), ("zerogpu_key", "k"), ("zerogpu_character_space", "kevin/character")):
+        db.set_meta(k, v)
+    zg._states.clear()
+    yield zg
+    for k in ("zerogpu_space", "zerogpu_key", "zerogpu_character_space", "space_waking:faces", "space_waking:character"):
+        db.set_meta(k, "")
+    zg._states.clear()
+
+
+def test_state_keeps_the_wake_chrono_until_ready(spaces_configured, monkeypatch):
+    import huggingface_hub
+
+    zg = spaces_configured
+    fake = _FakeHf(["SLEEPING", "SLEEPING", "APP_STARTING", "APP_STARTING", "RUNNING"])
+    monkeypatch.setattr(huggingface_hub, "HfApi", fake)
+    assert zg.state("character", max_age=0)["phase"] == "asleep"
+    woke = zg.wake("character")                                    # endormi → redémarré, chrono lancé
+    assert fake.restarts == ["kevin/character"] and woke["waking_since"] is not None
+    starting = zg.state("character", max_age=0)
+    assert starting["phase"] == "starting" and starting["waking_since"] == woke["waking_since"]
+    assert starting["expected_s"] == 1800
+    ready = zg.state("character", max_age=0)
+    assert ready["phase"] == "ready" and ready["waking_since"] is None
+    assert zg.wake("character")["phase"] == "ready" and len(fake.restarts) == 1   # déjà prêt : rien à faire
+
+
+def test_wait_until_ready_wakes_once_and_reports_the_chrono(spaces_configured, monkeypatch):
+    import huggingface_hub
+
+    zg = spaces_configured
+    fake = _FakeHf(["SLEEPING", "SLEEPING", "SLEEPING", "APP_STARTING", "APP_STARTING", "RUNNING"])
+    monkeypatch.setattr(huggingface_hub, "HfApi", fake)
+    seen = []
+    zg.wait_until_ready("faces", on_wait=lambda elapsed, expected: seen.append(expected), poll=0)
+    assert fake.restarts == ["kevin/gpu"] and seen and set(seen) == {180}
+
+
+def test_wait_until_ready_stops_on_a_broken_space_or_cancel(spaces_configured, monkeypatch):
+    import huggingface_hub
+
+    zg = spaces_configured
+    monkeypatch.setattr(huggingface_hub, "HfApi", _FakeHf(["RUNTIME_ERROR"]))
+    with pytest.raises(zg.ZeroGPUError, match="en erreur.*OOM"):          # une relance tentée, puis erreur claire
+        zg.wait_until_ready("faces", on_wait=lambda *a: None, poll=0)
+    monkeypatch.setattr(huggingface_hub, "HfApi", _FakeHf(["APP_STARTING"]))
+    with pytest.raises(zg.RemoteCancelled):
+        zg.wait_until_ready("faces", on_wait=lambda *a: None, should_cancel=lambda: True, poll=0)
+
+
+def test_state_api(client, spaces_configured, monkeypatch):
+    import huggingface_hub
+
+    fake = _FakeHf(["SLEEPING", "SLEEPING", "APP_STARTING"])
+    monkeypatch.setattr(huggingface_hub, "HfApi", fake)
+    assert client.get("/api/settings/zerogpu/state?kind=character").json()["phase"] == "asleep"
+    r = client.post("/api/settings/zerogpu/wake?kind=character").json()
+    assert fake.restarts == ["kevin/character"] and r["waking_since"]
+    from app import db
+
+    db.set_meta("zerogpu_character_space", "")
+    assert client.get("/api/settings/zerogpu/state?kind=character").json()["phase"] == "unconfigured"

@@ -81,7 +81,10 @@ export function HistoryDrawer({ open, onClose, onOpenJob }: { open: boolean; onC
                           )}
                         >
                           {LABEL[j.status]}
-                          {j.status === "running" && j.total ? ` ${Math.round((j.done / j.total) * 100)} %` : ""}
+                          {j.status === "running" && j.stage === "wake" ? " · réveil du Space" : ""}
+                          {j.status === "running" && j.total && ["swap", "pose", "mask", "generate"].includes(j.stage ?? "")
+                            ? ` ${Math.round((j.done / j.total) * 100)} %`
+                            : ""}
                         </span>
                       </div>
                     </button>

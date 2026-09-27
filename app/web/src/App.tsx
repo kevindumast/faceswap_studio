@@ -7,6 +7,7 @@ import { Stepper } from "./components/Stepper";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { LibraryDrawer } from "./components/LibraryDrawer";
 import { EngineSettings } from "./components/EngineSettings";
+import { chrono, useElapsed, useSpaceState } from "./components/SpaceStatus";
 import { Button, cx } from "./components/ui";
 import type { Selection } from "./components/trimmer/Trimmer";
 import { VideoStep } from "./steps/VideoStep";
@@ -193,12 +194,36 @@ export default function App() {
   );
 }
 
+/** Résumé des Spaces branchés pour la pastille : un réveil en cours (avec chrono) passe avant tout le reste. */
+function useZeroGpuSummary(data?: Status): { label: string; title: string; tone: "ok" | "warn" } | null {
+  const faces = useSpaceState("faces", !!data?.gpu.configured);
+  const character = useSpaceState("character", !!data?.gpu.character?.configured);
+  const states = [
+    { name: "Space niveaux 1-2", s: data?.gpu.configured ? faces.data : undefined },
+    { name: "Space niveau 4", s: data?.gpu.character?.configured ? character.data : undefined },
+  ].filter((x) => x.s);
+  const waking = states.find((x) => x.s!.phase === "starting");
+  const elapsed = useElapsed(waking?.s?.waking_since);
+  if (!states.length) return data?.gpu.configured ? { label: "+ ZeroGPU", title: "", tone: "ok" } : null;
+  const title = states.map((x) => `${x.name} : ${phaseText(x.s!.phase)}`).join(" · ") + ".";
+  if (waking) return { label: `ZeroGPU se réveille${elapsed != null ? ` ${chrono(elapsed)}` : ""}`, title, tone: "warn" };
+  if (states.some((x) => x.s!.phase === "error")) return { label: "ZeroGPU en erreur", title, tone: "warn" };
+  if (states.some((x) => x.s!.phase === "ready")) return { label: "ZeroGPU prêt", title, tone: "ok" };
+  return { label: "ZeroGPU endormi", title, tone: "ok" };
+}
+
+function phaseText(phase: string): string {
+  return { ready: "prêt", starting: "réveil en cours", asleep: "endormi", error: "en erreur" }[phase] ?? "état inconnu";
+}
+
 function EngineStatus({ data, error, onOpen }: { data?: Status; error: boolean; onOpen: () => void }) {
   let tone: "ok" | "warn" | "down" = "ok";
   const engine = data?.engine;
   const gpus = engine?.gpus.length ? ` · ${engine.gpus.join(" + ")}` : "";
-  let label = `Moteur prêt · ${engine?.label ?? "CPU"}${gpus}${data?.gpu.configured ? " · + ZeroGPU" : ""}`;
-  let title = "API, worker, modèles et ffmpeg opérationnels.";
+  const gpu = useZeroGpuSummary(data);
+  let label = `Moteur prêt · ${engine?.label ?? "CPU"}${gpus}${gpu ? ` · ${gpu.label}` : ""}`;
+  let title = `API, worker, modèles et ffmpeg opérationnels.${gpu ? ` ${gpu.title}` : ""}`;
+  if (gpu?.tone === "warn") tone = "warn";
   if (engine?.error) {
     tone = "warn";
     label = "Moteur mal configuré · CPU";
