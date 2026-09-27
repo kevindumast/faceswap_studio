@@ -29,7 +29,7 @@ type Props = {
   max: number;
 };
 
-const PRESETS = [5, 10, 15, 30];
+const PRESETS = [5, 10, 15, 30, 60];
 
 export function Trimmer({ video, selection, onChange, min, max }: Props) {
   const info = video.info!;

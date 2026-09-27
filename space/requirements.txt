@@ -1,0 +1,8 @@
+onnxruntime-gpu[cuda,cudnn]
+insightface
+onnx
+opencv-python-headless
+numpy
+pyyaml
+pillow
+spaces

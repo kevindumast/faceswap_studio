@@ -1,6 +1,6 @@
 import { ArrowRight, Cpu } from "lucide-react";
 import type { Status, Video } from "../lib/api";
-import { duration } from "../lib/time";
+import { cappedFps, duration } from "../lib/time";
 import { Button, SectionTitle } from "../components/ui";
 import { Trimmer, type Selection } from "../components/trimmer/Trimmer";
 
@@ -14,8 +14,9 @@ type Props = {
 
 export function SegmentStep({ video, status, selection, onChange, onNext }: Props) {
   const min = status?.segment.min_s ?? 5;
-  const max = status?.segment.max_s ?? 30;
-  const fps = video.info!.fps;
+  const max = status?.segment.max_s ?? 60;
+  // Même hypothèse que l'option cochée par défaut à l'étape Rendu : 30 i/s max.
+  const fps = cappedFps(video.info!.fps, status?.fps_cap ?? 30);
   const frames = Math.round((selection.end - selection.start) * fps);
   const estimate = frames * (status?.sec_per_frame ?? 2.2) + 15;
 
@@ -29,7 +30,7 @@ export function SegmentStep({ video, status, selection, onChange, onNext }: Prop
           <div className="flex items-center gap-4">
             <div className="text-right">
               <div className="flex items-center justify-end gap-1.5 text-[13px] text-muted">
-                <Cpu className="size-3.5" /> Calcul estimé · 1 visage ({status?.device === "cuda" ? "GPU" : "CPU"})
+                <Cpu className="size-3.5" /> Calcul estimé · 1 visage · {status?.engine.label ?? "CPU"}
               </div>
               <div className="font-mono text-lg tabular">≈ {duration(estimate)}</div>
             </div>

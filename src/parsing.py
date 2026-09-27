@@ -34,7 +34,7 @@ def _session():
     path = cfg.path("models") / cfg.models.parser
     if not path.is_file():
         raise ModelsMissing("Segmentation du visage absente : python scripts/download_models.py --level tone")
-    return ort.InferenceSession(str(path), providers=providers(cfg))
+    return ort.InferenceSession(str(path), providers=providers(cfg, role="analysis"))
 
 
 def parse(img_bgr: np.ndarray) -> np.ndarray:

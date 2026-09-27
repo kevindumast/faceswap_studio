@@ -1,13 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, ArrowRight, Check, Clapperboard, Cpu, Download, Film, Loader2, RotateCcw, Scissors, Sparkles, Wand2, X, Zap } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Clapperboard, Cpu, Download, Film, Loader2, Pause, Play, RotateCcw, Scissors, Sparkles, Wand2, X, Zap } from "lucide-react";
 import { useState } from "react";
-import { ApiError, api, type Job, type JobParams, type Level, type Mapping, type Status, type Video } from "../lib/api";
+import { ApiError, api, type Job, type JobParams, type Level, type Mapping, type Resolution, type Status, type Video } from "../lib/api";
 import { levelInfo } from "../lib/levels";
-import { personColor, sameBox } from "../lib/people";
-import { duration, seconds, timecode } from "../lib/time";
+import { faceIndex, styleOf } from "../lib/people";
+import { cappedFps, duration, seconds, timecode } from "../lib/time";
 import { Button, Card, Notice, ProgressBar, SectionTitle, SegmentedControl, Switch, cx } from "../components/ui";
 import { Compare } from "../components/Compare";
+import { openEngineSettings } from "../components/EngineSettings";
 import type { Selection } from "../components/trimmer/Trimmer";
 import { PersonBadge } from "./FacesStep";
 
@@ -32,7 +33,7 @@ export function RenderStep(p: Props) {
     queryKey: ["job", p.jobId],
     queryFn: () => api.job(p.jobId!),
     enabled: !!p.jobId,
-    refetchInterval: (q) => (q.state.data && TERMINAL.includes(q.state.data.status) ? false : 1000),
+    refetchInterval: (q) => (q.state.data && TERMINAL.includes(q.state.data.status) ? false : q.state.data?.status === "paused" ? 3000 : 1000),
     // Rendu supprimé (404) : on arrête tout de suite. API qui redémarre : on réessaie sans rien afficher.
     retry: (count, err) => !(err instanceof ApiError && err.status === 404) && count < 10,
     retryDelay: 1000,
@@ -71,6 +72,7 @@ export function RenderStep(p: Props) {
       </div>
     );
   }
+  if (j.status === "paused") return <PausedView job={j} video={p.video} />;
   return <Running job={j} video={p.video} worker={p.status?.worker ?? true} />;
 }
 
@@ -83,26 +85,45 @@ function Setup(p: Props) {
   const [useGpu, setUseGpu] = useState(false);
   const info = levelInfo(p.level);
   const fps = p.video.info!.fps;
+  const cap = p.status?.fps_cap ?? 30;
+  const highFps = fps > cap + 0.5;
+  // Coché par défaut pour les vidéos > 30 i/s : cadence standard des réseaux sociaux, rendu 2× plus rapide en 60 i/s.
+  const [limitFps, setLimitFps] = useState(true);
+  const renderFps = highFps && limitFps ? cappedFps(fps, cap) : fps;
   const len = p.selection.end - p.selection.start;
-  const frames = Math.round(len * fps);
+  const frames = Math.round(len * renderFps);
   const active = p.mappings.filter((m): m is Mapping & { person: string } => !!m.person);
   // Le swap domine le temps de calcul : chaque visage remplacé en plus coûte ~75 % d'une passe.
   const swapFactor = 1 + 0.75 * Math.max(0, active.length - 1);
   const spf = p.status?.levels[p.level]?.sec_per_frame ?? p.status?.sec_per_frame ?? 2.2;
-  const gpuConfigured = !!p.status?.gpu.configured;
+  // Niveau 4 : son propre Space (Wan2.2-Animate), une seule personne, durée limitée, résolution au choix.
+  const isCharacter = p.level === "character";
+  const character = p.status?.gpu.character;
+  const [resolution, setResolution] = useState<Resolution>("360p");
+  const maxCharacter = character?.max_s ?? 10;
+  const tooLong = isCharacter && len > maxCharacter + 0.01;
+  const notOne = isCharacter && active.length !== 1;
+  const gpuConfigured = isCharacter ? !!character?.configured : !!p.status?.gpu.configured;
   const blockedByGpu = !!info.gpuOnly && !useGpu;
   // Mode « vidéo complète » : le reste du clip est seulement réencodé (≈ 4× plus vite que le temps réel).
   const fullExtra = p.video.info!.duration * 0.25;
-  const estimate = frames * spf * swapFactor + 15 + (output === "full" ? fullExtra : 0);
+  // ZeroGPU : temps GPU (= quota) par image, + envoi, file d'attente et réveil éventuel du Space.
+  const gpuSpf = p.status?.gpu.sec_per_frame?.[p.level] ?? 0.1;
+  const characterPerS = character?.gpu_s_per_second[resolution] ?? (resolution === "480p" ? 26 : 12);
+  const characterSteps = character?.steps ?? 6;
+  const gpuSeconds = isCharacter ? characterGpuSeconds(len, characterPerS, characterSteps) : frames * gpuSpf * swapFactor;
+  const quotaLeft = (p.status?.gpu.free_quota_s ?? 300) - (p.status?.gpu.used_today_s ?? 0);
+  const estimate = useGpu
+    ? gpuSeconds + (isCharacter ? 90 : 60) + (output === "full" ? fullExtra : 0)
+    : frames * spf * swapFactor + 15 + (output === "full" ? fullExtra : 0);
   const faceSet = useQuery({ queryKey: ["faceset", p.faceSetId], queryFn: () => api.faceSet(p.faceSetId) });
-  const t0 = active[0]?.t;
-  const targetFaces = useQuery({
-    queryKey: ["faces", p.video.id, t0],
-    queryFn: () => api.facesAt(p.video.id, t0!),
-    enabled: t0 !== undefined,
+  // Même requête que l'étape Visages : la recherche du passage est déjà en cache.
+  const scan = useQuery({
+    queryKey: ["scan", p.video.id, p.selection.start, p.selection.end],
+    queryFn: () => api.scan(p.video.id, p.selection.start, p.selection.end),
     staleTime: Infinity,
   });
-  const cropOf = (m: Mapping) => targetFaces.data?.faces.find((f) => sameBox(f.box, m.box))?.crop;
+  const cropOf = (m: Mapping) => (scan.data ? scan.data.faces[faceIndex(scan.data, m)]?.crop : undefined);
 
   const launch = useMutation({
     mutationFn: () =>
@@ -117,6 +138,8 @@ function Setup(p: Props) {
         mappings: active.map(({ t, box, person }) => ({ t, box, person })),
         level: p.level,
         use_gpu: useGpu,
+        ...(isCharacter ? { resolution } : {}),
+        limit_fps: highFps && limitFps,
         consent: p.consent,
       }),
     onSuccess: (j) => {
@@ -160,9 +183,9 @@ function Setup(p: Props) {
                       {crop ? <img src={crop} alt="" className="size-8 rounded-full object-cover ring-1 ring-line-strong" /> : <span className="size-8 rounded-full bg-raised" />}
                       <ArrowRight className="size-3.5 text-faint" />
                       {person?.cover_url ? (
-                        <img src={person.cover_url} alt="" className="size-8 rounded-full object-cover ring-2" style={{ ["--tw-ring-color" as string]: personColor(m.person) }} />
+                        <img src={person.cover_url} alt="" className="size-8 rounded-full object-cover ring-2" style={{ ["--tw-ring-color" as string]: styleOf(persons, m.person).color }} />
                       ) : (
-                        <PersonBadge id={m.person} size="md" />
+                        <PersonBadge style={styleOf(persons, m.person)} size="md" />
                       )}
                       <span>{person?.name ?? `Personne ${m.person}`}</span>
                       <span className="text-[12px] text-muted">
@@ -202,13 +225,59 @@ function Setup(p: Props) {
               : `Toute la vidéo (${duration(p.video.info!.duration)}) : seul le passage de ${seconds(len)} est transformé, le reste est simplement recopié autour (≈ +${duration(fullExtra)}).`}
           </p>
           <div className="space-y-3 border-t border-line pt-4">
-            <Switch checked={stabilize} onChange={setStabilize} label="Stabilisation" description="Lisse les tremblements du visage d'une image à l'autre." />
+            {!isCharacter && (
+              <Switch checked={stabilize} onChange={setStabilize} label="Stabilisation" description="Lisse les tremblements du visage d'une image à l'autre." />
+            )}
             <Switch checked={aiLabel} onChange={setAiLabel} label="Étiquette « Contenu modifié par IA »" description="Petite mention en bas à droite, recommandée pour publier." />
+            {highFps && (
+              <Switch
+                checked={limitFps}
+                onChange={setLimitFps}
+                label={`Limiter à ${Math.round(cappedFps(fps, cap))} i/s`}
+                description={`Vidéo en ${Math.round(fps)} i/s : une image sur ${Math.round(fps / cappedFps(fps, cap))} est gardée, rendu ${Math.round(fps / cappedFps(fps, cap))}× plus rapide. Standard TikTok / Reels ; décoché : cadence d'origine.`}
+              />
+            )}
             {!aiLabel && info.step >= 2 && (
               <Notice tone="warn">Plus le rendu est réaliste, plus l'étiquette compte : sans elle, la vidéo peut passer pour vraie une fois partagée.</Notice>
             )}
           </div>
-          <GpuOption checked={useGpu} onChange={setUseGpu} configured={gpuConfigured} required={!!info.gpuOnly} />
+          {isCharacter && (
+            <div className="mt-4 border-t border-line pt-4">
+              <div className="mb-1 text-[13px] font-medium">Qualité de la personne générée</div>
+              <SegmentedControl
+                value={resolution}
+                onChange={setResolution}
+                className="w-full"
+                options={[
+                  { value: "360p", label: "360p · économique" },
+                  { value: "480p", label: "480p · plus net" },
+                ]}
+              />
+              <p className="mt-2 text-[13px] text-muted">
+                La personne est générée en {resolution} puis recollée sur la vidéo : le reste de l'image garde sa netteté.
+                {resolution === "480p" ? " Environ deux fois plus de quota." : ""}
+              </p>
+              {tooLong && (
+                <Notice tone="warn" className="mt-3">
+                  Le niveau 4 est limité à {seconds(maxCharacter)} (quota GPU) : raccourcis le passage ({seconds(len)} actuellement).
+                </Notice>
+              )}
+              {notOne && (
+                <Notice tone="warn" className="mt-3">
+                  Le niveau 4 remplace une seule personne à la fois : garde une seule association à l'étape Visages.
+                </Notice>
+              )}
+            </div>
+          )}
+          <GpuOption
+            checked={useGpu}
+            onChange={setUseGpu}
+            configured={gpuConfigured}
+            required={!!info.gpuOnly}
+            quotaNeeded={gpuSeconds}
+            quotaLeft={quotaLeft}
+            spaceLabel={isCharacter ? "le Space du niveau 4" : undefined}
+          />
           <div className="mt-auto pt-6">
             {p.status && !p.status.worker && (
               <Notice tone="warn" className="mb-4">
@@ -227,7 +296,17 @@ function Setup(p: Props) {
                 </div>
                 <div className="font-mono text-lg tabular">≈ {duration(estimate)}</div>
                 <div className="mt-0.5 font-mono text-[11px] text-faint tabular" title="Images du passage × secondes par image (mesurée sur ta machine) × visages remplacés">
-                  {frames} img × {spf.toFixed(1).replace(".", ",")} s{active.length > 1 ? ` × ${swapFactor.toFixed(2).replace(".", ",")} (${active.length} visages)` : ""}
+                  {isCharacter ? (
+                    <>
+                      {seconds(len)} × {Math.round(characterPerS)} s de GPU/s ({resolution}, {characterSteps} étapes) + ~1 min 30 d'envoi et de recollage
+                    </>
+                  ) : (
+                    <>
+                      {frames} img × {(useGpu ? gpuSpf : spf).toFixed(useGpu ? 2 : 1).replace(".", ",")} s{useGpu ? " (ZeroGPU)" : ""}
+                      {active.length > 1 ? ` × ${swapFactor.toFixed(2).replace(".", ",")} (${active.length} visages)` : ""}
+                      {useGpu ? " + ~1 min d'envoi" : ""}
+                    </>
+                  )}
                   {output === "full" ? ` + ${duration(fullExtra)} recopie` : ""}
                 </div>
               </div>
@@ -235,8 +314,8 @@ function Setup(p: Props) {
                 variant="primary"
                 size="lg"
                 loading={launch.isPending}
-                disabled={!active.length || blockedByGpu}
-                title={blockedByGpu ? "Ce niveau nécessite l'option GPU" : undefined}
+                disabled={!active.length || blockedByGpu || tooLong || notOne}
+                title={blockedByGpu ? "Ce niveau nécessite l'option GPU" : tooLong ? "Passage trop long pour le niveau 4" : notOne ? "Une seule personne au niveau 4" : undefined}
                 onClick={() => launch.mutate()}
                 icon={<Wand2 className="size-4" />}
               >
@@ -250,8 +329,30 @@ function Setup(p: Props) {
   );
 }
 
+/** Temps GPU du niveau 4 : même formule que le Space (45 s de préparation + par seconde d'extrait, pour 6 étapes). */
+function characterGpuSeconds(len: number, perSecond: number, steps: number): number {
+  return 45 + (len * perSecond * steps) / 6;
+}
+
 /** Option GPU : décochée par défaut, grisée tant qu'aucun GPU n'est branché, jamais cochée à la place de l'utilisateur. */
-function GpuOption({ checked, onChange, configured, required }: { checked: boolean; onChange: (v: boolean) => void; configured: boolean; required: boolean }) {
+function GpuOption({
+  checked,
+  onChange,
+  configured,
+  required,
+  quotaNeeded,
+  quotaLeft,
+  spaceLabel,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  configured: boolean;
+  required: boolean;
+  quotaNeeded: number;
+  quotaLeft: number;
+  /** Space concerné, s'il n'est pas celui des niveaux 1-2 (ex. « le Space du niveau 4 »). */
+  spaceLabel?: string;
+}) {
   return (
     <div className="mt-4 border-t border-line pt-4">
       <label className={cx("flex items-start gap-3", configured ? "cursor-pointer" : "cursor-not-allowed opacity-60")}>
@@ -269,12 +370,28 @@ function GpuOption({ checked, onChange, configured, required }: { checked: boole
             <Zap className="size-3.5 text-warn" /> Utiliser le GPU (ZeroGPU)
           </span>
           <span className="mt-0.5 block text-[13px] text-muted">
-            {configured
-              ? "Plus rapide, mais consomme ton quota ZeroGPU. Décoché : calcul sur ton CPU."
-              : "Aucun GPU branché : le calcul se fait sur ton CPU."}
+            {configured ? (
+              <>
+                ≈ {duration(quotaNeeded)} de GPU sur ton quota (il reste ≈ {duration(Math.max(0, quotaLeft))} aujourd'hui en gratuit). Décoché : calcul sur ce PC.
+              </>
+            ) : spaceLabel ? (
+              `Pas encore branché : ${spaceLabel} se crée en une commande (Moteur → Niveau 4).`
+            ) : (
+              "Aucun GPU ZeroGPU branché : le calcul se fait sur ce PC."
+            )}
           </span>
+          {!configured && (
+            <button type="button" onClick={openEngineSettings} className="mt-1 text-[13px] text-accent underline-offset-2 hover:underline">
+              {spaceLabel ? "Brancher le Space du niveau 4" : "Brancher ZeroGPU"}
+            </button>
+          )}
         </span>
       </label>
+      {configured && checked && quotaNeeded > quotaLeft && (
+        <Notice tone="warn" className="mt-3">
+          Ce rendu demande plus que le quota restant aujourd'hui : il risque d'être coupé. Raccourcis le passage ou décoche l'option.
+        </Notice>
+      )}
       {required && !checked && (
         <Notice tone="warn" className="mt-3">
           Ce niveau ne peut tourner que sur GPU : coche l'option{configured ? "" : " (après avoir branché ZeroGPU)"} pour lancer le rendu.
@@ -307,9 +424,72 @@ function overall(j: Job): number {
   return 0;
 }
 
+/** Rendu en pause : ce qui est déjà calculé est gardé, la reprise repart à la même image. */
+function PausedView({ job, video }: { job: Job; video: Video }) {
+  const qc = useQueryClient();
+  const resume = useMutation({ mutationFn: () => api.resumeJob(job.id), onSuccess: (j) => qc.setQueryData(["job", j.id], j) });
+  const cancel = useMutation({ mutationFn: () => api.cancelJob(job.id), onSuccess: (j) => qc.setQueryData(["job", j.id], j) });
+  const info = video.info!;
+  const frac = job.total ? job.done / job.total : 0;
+  return (
+    <div>
+      <SectionTitle
+        eyebrow="Étape 4 · Rendu"
+        title="En pause"
+        subtitle="Tu peux fermer l'appli ou éteindre le PC : le rendu reprendra exactement à cette image."
+        right={
+          <div className="flex gap-2">
+            <Button variant="primary" size="md" icon={<Play className="size-4 fill-current" />} onClick={() => resume.mutate()} loading={resume.isPending}>
+              Reprendre
+            </Button>
+            <Button variant="danger" size="md" icon={<X className="size-4" />} onClick={() => cancel.mutate()} loading={cancel.isPending}>
+              Annuler
+            </Button>
+          </div>
+        }
+      />
+      {job.error && (
+        <Notice tone="info" className="mb-5">
+          {job.error}
+        </Notice>
+      )}
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+        <div className="relative overflow-hidden rounded-[var(--radius-card)] bg-black ring-1 ring-line" style={{ aspectRatio: `${info.width} / ${info.height}` }}>
+          {job.done > 0 && <img src={`${job.preview_url}?v=${job.done}`} alt="Dernière image calculée" className="absolute inset-0 size-full object-contain opacity-70" />}
+          <span className="absolute top-3 left-3 flex items-center gap-1.5 rounded-full bg-black/60 px-2.5 py-1 text-[11px] backdrop-blur-md">
+            <Pause className="size-3 fill-current" /> Dernière image calculée
+          </span>
+        </div>
+        <Card className="flex flex-col p-5 sm:p-6">
+          <div className="flex items-baseline justify-between">
+            <span className="font-mono text-5xl font-medium tracking-tight tabular">
+              {Math.round(frac * 100)}
+              <span className="text-2xl text-muted">%</span>
+            </span>
+            <span className="font-mono text-sm text-muted tabular">
+              {job.done}/{job.total} images
+            </span>
+          </div>
+          <ProgressBar value={frac} tone="warn" className="mt-4 h-2" />
+          <p className="mt-6 text-[13px] text-muted">
+            Déjà calculé : {job.done} image{job.done > 1 ? "s" : ""}. Pendant la pause, le worker est libre pour d'autres rendus ;
+            à la reprise, ce rendu repasse en tête de file.
+          </p>
+          {(resume.error || cancel.error) && (
+            <Notice tone="danger" className="mt-4">
+              {(resume.error ?? cancel.error)!.message}
+            </Notice>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 function Running({ job, video, worker }: { job: Job; video: Video; worker: boolean }) {
   const qc = useQueryClient();
   const cancel = useMutation({ mutationFn: () => api.cancelJob(job.id), onSuccess: (j) => qc.setQueryData(["job", j.id], j) });
+  const pause = useMutation({ mutationFn: () => api.pauseJob(job.id), onSuccess: (j) => qc.setQueryData(["job", j.id], j) });
   const frac = overall(job);
   const stageIdx = STAGES.findIndex((s) => s.key === job.stage);
   const queued = job.status === "queued";
@@ -320,7 +500,7 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
     <div>
       <SectionTitle
         eyebrow="Étape 4 · Rendu"
-        title={queued ? "En file d'attente…" : job.status === "cancelling" ? "Annulation…" : "Rendu en cours"}
+        title={queued ? "En file d'attente…" : job.status === "cancelling" ? "Annulation…" : job.status === "pausing" ? "Mise en pause…" : "Rendu en cours"}
         subtitle={
           queued && !worker
             ? "Le worker n'est pas lancé : démarre scripts\\dev.ps1 pour que le rendu commence."
@@ -329,9 +509,24 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
               : "Tu peux changer d'onglet, le calcul continue."
         }
         right={
-          <Button variant="danger" size="md" icon={<X className="size-4" />} onClick={() => cancel.mutate()} loading={cancel.isPending} disabled={job.status === "cancelling"}>
-            Annuler
-          </Button>
+          <div className="flex gap-2">
+            {job.pausable && (
+              <Button
+                variant="secondary"
+                size="md"
+                icon={<Pause className="size-4" />}
+                onClick={() => pause.mutate()}
+                loading={pause.isPending || job.status === "pausing"}
+                disabled={job.status === "cancelling"}
+                title="Arrêter ici et reprendre plus tard, à la même image"
+              >
+                Pause
+              </Button>
+            )}
+            <Button variant="danger" size="md" icon={<X className="size-4" />} onClick={() => cancel.mutate()} loading={cancel.isPending} disabled={job.status === "cancelling"}>
+              Annuler
+            </Button>
+          </div>
         }
       />
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">

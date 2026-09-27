@@ -146,10 +146,10 @@ def claim_next_job() -> dict | None:
 
 
 def jobs_ahead(created_at: float) -> int:
-    """Rendus en cours ou en attente créés avant celui-ci (le worker les traite un par un)."""
+    """Rendus en cours ou en attente créés avant celui-ci (le worker les traite un par un ; ceux en pause ne comptent pas)."""
     with connect() as c:
         row = c.execute(
-            "SELECT COUNT(*) AS n FROM jobs WHERE status IN ('queued', 'running', 'cancelling') AND created_at < ?",
+            "SELECT COUNT(*) AS n FROM jobs WHERE status IN ('queued', 'running', 'cancelling', 'pausing') AND created_at < ?",
             (created_at,),
         ).fetchone()
     return row["n"]
@@ -189,9 +189,9 @@ def cleanup(retention_hours: float) -> int:
     with connect() as c:
         old_videos = [r["id"] for r in c.execute("SELECT id FROM videos WHERE created_at < ?", (limit,))]
         old_jobs = [r["id"] for r in c.execute(
-            "SELECT id FROM jobs WHERE created_at < ? AND status NOT IN ('queued', 'running')", (limit,))]
+            "SELECT id FROM jobs WHERE created_at < ? AND status NOT IN ('queued', 'running', 'pausing', 'paused')", (limit,))]
         c.execute("DELETE FROM videos WHERE created_at < ?", (limit,))
-        c.execute("DELETE FROM jobs WHERE created_at < ? AND status NOT IN ('queued', 'running')", (limit,))
+        c.execute("DELETE FROM jobs WHERE created_at < ? AND status NOT IN ('queued', 'running', 'pausing', 'paused')", (limit,))
     for kind, ids in (("videos", old_videos), ("jobs", old_jobs)):
         for obj_id in ids:
             shutil.rmtree(folder(kind, obj_id), ignore_errors=True)

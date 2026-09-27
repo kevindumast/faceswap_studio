@@ -46,13 +46,22 @@ export type UrlInfo = {
   max_duration_s: number;
 };
 
-export type Photo = { id: string; name: string; ok: boolean; person: string | null; crop_url: string | null; photo_url: string };
-export type Person = { id: string; name: string; count: number; cover_url: string | null };
-export type FaceSet = { id: string; photos: Photo[]; persons: Person[]; ok_count: number };
+/** Photo d'une personne de la bibliothèque (toujours avec un visage détecté). */
+export type Photo = { id: string; name: string; crop_url: string; photo_url: string };
+/** Personne de la bibliothèque : permanente, réutilisable dans toutes les vidéos. */
+export type Person = { id: string; name: string; count: number; cover_url: string | null; photos: Photo[]; created_at?: number; updated_at?: number };
+export type RejectedPhoto = { id: string; name: string; photo_url: string };
+/** Résultat de l'import d'une photo : reconnue dans une personne existante, nouvelle personne, ou pas de visage. */
+export type ImportResult = { ok: boolean; name: string; person_id?: string; person_name?: string; created?: boolean };
+/** Session d'une vidéo : les personnes de la bibliothèque choisies pour ce rendu. */
+export type FaceSet = { id: string; persons: Person[]; rejected: RejectedPhoto[]; ok_count: number; legacy?: boolean; imported?: ImportResult[] };
 
 export type Box = [number, number, number, number];
 export type DetectedFace = { box: Box; score: number; crop: string };
 export type FramesFaces = { t: number; width: number; height: number; frame: string; faces: DetectedFace[] };
+/** Une personne vue dans le passage (plusieurs images analysées), représentée par sa meilleure apparition. */
+export type ScanFace = { t: number; box: Box; score: number; seen: number; height_px: number; maybe_same: number | null; crop: string };
+export type PassageScan = { start: number; end: number; samples: number; faces: ScanFace[]; frames: Record<string, string>; width: number; height: number };
 
 export type Target = { t: number; box: Box };
 /** Un visage du clip → une personne source. person = null : visage laissé intact (choix explicite). */
@@ -81,8 +90,12 @@ export type JobParams = {
   target?: Target | null;
   level: Level;
   use_gpu: boolean;
-  resolution?: "360p" | "480p";
+  resolution?: Resolution;
+  limit_fps?: boolean;
 };
+
+/** Niveau 4 : résolution à laquelle la personne est générée sur le Space (puis recollée sur la vidéo). */
+export type Resolution = "360p" | "480p";
 
 export type Job = {
   id: string;
@@ -90,7 +103,9 @@ export type Job = {
   video_title: string | null;
   face_set_id: string;
   params: JobParams;
-  status: "queued" | "running" | "cancelling" | "cancelled" | "done" | "error";
+  status: "queued" | "running" | "cancelling" | "cancelled" | "done" | "error" | "pausing" | "paused";
+  /** false pour ZeroGPU : le Space calcule tout l'extrait d'un coup. */
+  pausable: boolean;
   stage: "cut" | "swap" | "assemble" | null;
   done: number;
   total: number;
@@ -106,21 +121,49 @@ export type Job = {
   created_at: number;
 };
 
+export type Engine = { accelerator: "cpu" | "dml" | "cuda"; label: string; gpus: string[]; error: string | null };
+
 export type Status = {
   device: string;
+  engine: Engine;
   ffmpeg: boolean;
   models: boolean;
   worker: boolean;
   segment: { min_s: number; max_s: number };
   photos_max: number;
+  fps_cap: number;
   upload_max_mb: number;
   video_ext: string[];
   sec_per_frame: number;
   levels: Record<Level, LevelStatus>;
-  gpu: { configured: boolean };
+  gpu: {
+    configured: boolean;
+    space: string | null;
+    used_today_s: number;
+    free_quota_s: number;
+    sec_per_frame: Partial<Record<Level, number>>;
+    /** Niveau 4 : Space dédié (Wan2.2-Animate) et de quoi estimer son temps de GPU. */
+    character: { configured: boolean; space: string | null; max_s: number; steps: number; gpu_s_per_second: Record<Resolution, number> };
+  };
   example_url: string;
   youtube_max_duration_s: number;
 };
+
+export type ZeroGPUSettings = {
+  space: string | null;
+  token_set: boolean;
+  key_set: boolean;
+  /** « hf_…AB12 » : 4 derniers caractères seulement. */
+  token_hint: string | null;
+  configured: boolean;
+  /** Dernier test de connexion réussi avec ces réglages. */
+  tested: boolean;
+  /** Space du niveau 4 (même jeton, même clé). */
+  character_space: string | null;
+  character_configured: boolean;
+  character_tested: boolean;
+};
+export type ZeroGPUTest = { ok: boolean; latency_ms: number; version: string; levels: Level[]; zerogpu: boolean };
 
 export class ApiError extends Error {
   status: number;
@@ -149,6 +192,10 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
     body: body instanceof FormData ? body : body === undefined ? undefined : JSON.stringify(body),
   });
   if (!res.ok) throw await parseError(res);
+  // Page HTML au lieu de données : en pratique, l'API tourne avec une ancienne version qui ne connaît pas la route.
+  if (!(res.headers.get("content-type") ?? "").includes("application/json")) {
+    throw new ApiError(res.status, "L'API ne connaît pas cette fonction : elle tourne sans doute avec une ancienne version. Relance l'API et le worker (DEMARRAGE.md).");
+  }
   return res.json() as Promise<T>;
 }
 
@@ -189,7 +236,11 @@ export const api = {
   deleteVideo: (id: string) => request<{ ok: boolean }>("DELETE", `/api/videos/${id}`),
   facesAt: (id: string, t: number) => request<FramesFaces>("GET", `/api/videos/${id}/faces?t=${t.toFixed(3)}`),
 
-  createFaceSet: (files: File[]) => {
+  scan: (id: string, start: number, end: number) =>
+    request<PassageScan>("GET", `/api/videos/${id}/scan?start=${start.toFixed(2)}&end=${end.toFixed(2)}`),
+
+  // Session de la vidéo (personnes choisies pour ce rendu)
+  createFaceSet: (files: File[] = []) => {
     const form = new FormData();
     files.forEach((f) => form.append("files", f));
     form.append("consent", "true");
@@ -198,18 +249,44 @@ export const api = {
   addPhotos: (setId: string, files: File[]) => {
     const form = new FormData();
     files.forEach((f) => form.append("files", f));
+    form.append("consent", "true");
     return upload<FaceSet>(`/api/faces/${setId}/photos`, form);
   },
   faceSet: (setId: string) => request<FaceSet>("GET", `/api/faces/${setId}`),
-  deletePhoto: (setId: string, photoId: string) =>
-    request<FaceSet>("DELETE", `/api/faces/${setId}/photos/${photoId}`),
-  movePhoto: (setId: string, photoId: string, person: string | "new") =>
-    request<FaceSet>("PATCH", `/api/faces/${setId}/photos/${photoId}`, { person }),
+  addPersonToSet: (setId: string, personId: string) => request<FaceSet>("POST", `/api/faces/${setId}/people`, { person_id: personId }),
+  removePersonFromSet: (setId: string, personId: string) => request<FaceSet>("DELETE", `/api/faces/${setId}/people/${personId}`),
+  deleteRejected: (setId: string, rid: string) => request<FaceSet>("DELETE", `/api/faces/${setId}/rejected/${rid}`),
+
+  // Bibliothèque de personnes
+  people: (q = "") => request<Person[]>("GET", `/api/people${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+  person: (pid: string) => request<Person>("GET", `/api/people/${pid}`),
+  renamePerson: (pid: string, name: string) => request<Person>("PATCH", `/api/people/${pid}`, { name }),
+  deletePerson: (pid: string) => request<{ ok: boolean }>("DELETE", `/api/people/${pid}`),
+  movePhoto: (pid: string, photoId: string, person: string | "new") =>
+    request<{ moved_to: string; source_exists: boolean }>("PATCH", `/api/people/${pid}/photos/${photoId}`, { person }),
+  deletePhoto: (pid: string, photoId: string) =>
+    request<{ ok: boolean; person_exists: boolean }>("DELETE", `/api/people/${pid}/photos/${photoId}`),
+  importToLibrary: (files: File[]) => {
+    const form = new FormData();
+    files.forEach((f) => form.append("files", f));
+    form.append("consent", "true");
+    return upload<{ imported: ImportResult[]; people: Person[] }>("/api/people/photos", form);
+  },
+
+  // Moteur : Space ZeroGPU (le jeton et la clé ne reviennent jamais au navigateur)
+  settings: () => request<{ zerogpu: ZeroGPUSettings }>("GET", "/api/settings"),
+  saveZeroGPU: (body: { space: string; token?: string; key?: string; character_space?: string }) =>
+    request<{ zerogpu: ZeroGPUSettings }>("PUT", "/api/settings/zerogpu", body),
+  clearZeroGPU: () => request<{ zerogpu: ZeroGPUSettings }>("DELETE", "/api/settings/zerogpu"),
+  testZeroGPU: (kind: "faces" | "character" = "faces") =>
+    request<ZeroGPUTest>("POST", `/api/settings/zerogpu/test${kind === "character" ? "?kind=character" : ""}`),
 
   jobs: () => request<Job[]>("GET", "/api/jobs"),
   job: (id: string) => request<Job>("GET", `/api/jobs/${id}`),
   createJob: (body: JobParams & { video_id: string; face_set_id: string; consent: boolean }) =>
     request<Job>("POST", "/api/jobs", body),
   cancelJob: (id: string) => request<Job>("POST", `/api/jobs/${id}/cancel`),
+  pauseJob: (id: string) => request<Job>("POST", `/api/jobs/${id}/pause`),
+  resumeJob: (id: string) => request<Job>("POST", `/api/jobs/${id}/resume`),
   deleteJob: (id: string) => request<{ ok: boolean }>("DELETE", `/api/jobs/${id}`),
 };

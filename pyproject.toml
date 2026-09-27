@@ -14,6 +14,10 @@ dependencies = [
     "onnx",
     "opencv-python-headless",
     "numpy",
+    # GPU distant ZeroGPU (optionnel à l'usage, mais le panneau Moteur les importe)
+    "gradio_client",
+    "huggingface_hub",
+    "truststore",       # proxy d'entreprise : vérifie TLS avec les certificats de Windows
 ]
 
 [project.optional-dependencies]

@@ -1,6 +1,6 @@
 # Faceswap Studio
 
-Appli locale de face swap vidéo (usage perso / parodie, étiquetée IA) : vidéo YouTube ou fichier → choix d'un passage de 5 à 30 s → photos du visage source → rendu.
+Appli locale de face swap vidéo (usage perso / parodie, étiquetée IA) : vidéo YouTube ou fichier → choix d'un passage de 5 à 60 s → photos du visage source → rendu.
 
 > Modèles InsightFace (`inswapper_128`, `buffalo_l`) : **usage non commercial uniquement**. L'API n'écoute que sur `127.0.0.1`.
 
@@ -15,6 +15,8 @@ cd app\web; npm install; cd ..\..
 ```
 
 ## Lancer
+
+Pas à pas avec dépannage : voir [DEMARRAGE.md](DEMARRAGE.md).
 
 Tout d'un coup (3 fenêtres + navigateur) :
 
@@ -31,6 +33,21 @@ cd app\web; npm run dev                        # front  → http://127.0.0.1:517
 ```
 
 Version « un seul serveur » : `cd app\web; npm run build`, puis seule l'API suffit (elle sert le front sur http://127.0.0.1:8000).
+
+## Moteur de calcul
+
+`device` dans `config.yaml` : `auto` (recommandé) prend la carte graphique si elle est installée, sinon le CPU.
+Même code partout ; seul le paquet onnxruntime change selon la machine :
+
+| Machine | Moteur | Paquet |
+|---|---|---|
+| Windows, toute carte graphique | DirectML (`dml`) | `onnxruntime-directml` → `scripts\activer_gpu.ps1` |
+| Serveur / Space avec carte NVIDIA | CUDA (`cuda`) | `onnxruntime-gpu[cuda,cudnn]` |
+| Sans carte graphique | CPU (`cpu`) | `onnxruntime` |
+
+Mesuré sur ce PC (i7-1185G7, MX450 2 Go + Iris Xe), rendu de 5 s : CPU ≈ 4 min 20, DirectML réparti ≈ 49 s (niveau 1).
+`dml_placement: split` garde la MX450 pour le swap seul : ses 2 Go saturent si tous les modèles y sont chargés.
+Un moteur demandé explicitement mais absent donne une erreur claire, jamais un repli silencieux sur le CPU.
 
 ## Niveaux de transformation
 

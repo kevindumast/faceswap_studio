@@ -1,7 +1,26 @@
 # Configuration du pipeline et de l'appli. Tous les chemins sont relatifs à la racine du repo.
 
-device: cpu            # cpu | cuda  (cuda = onnxruntime-gpu requis)
-det_size: 640          # taille d'entrée du détecteur (320 = plus rapide, moins précis)
+# Moteur de calcul local :
+#   auto : la carte graphique si elle est installée (CUDA, puis DirectML), sinon le CPU  ← recommandé
+#   cpu  : toujours disponible (paquet onnxruntime)
+#   dml  : carte graphique via DirectML, Windows, toutes marques (paquet onnxruntime-directml)
+#   cuda : carte NVIDIA via CUDA (paquet onnxruntime-gpu[cuda,cudnn]) ; carte choisie par cuda_device_id
+# Passer ce PC sur la carte graphique : scripts\activer_gpu.ps1 (retour au CPU : scripts\activer_gpu.ps1 -Cpu)
+device: auto
+cuda_device_id: 0
+# DirectML sur un portable à deux cartes : split = le swap sur la carte la plus puissante (mémoire dédiée),
+# l'analyse (détection, identité, segmentation) sur l'autre. ×3,5 plus rapide que tout sur la MX450 (2 Go saturés).
+dml_placement: split
+det_size: 640          # taille d'entrée du détecteur pendant le rendu (320 = plus rapide, moins précis)
+det_thresh: 0.4        # confiance minimale d'un visage pendant le rendu (l'identité filtre les faux positifs)
+
+# Recherche des personnes d'un passage (étape Visages) : plusieurs images, détection plus fine et plus tolérante.
+scan:
+  samples: 12          # images analysées, réparties sur tout le passage
+  det_size: 960        # plus fin que le rendu : trouve les petits visages (plans larges, arrière-plan)
+  det_thresh: 0.3      # accepte les visages flous, de profil ou dans l'ombre
+  min_face_px: 24      # en dessous, trop petit pour un remplacement propre
+  same_person: 0.4     # similarité ArcFace pour regrouper deux visages comme la même personne
 
 paths:
   models: models
@@ -25,14 +44,25 @@ models:
 levels:
   face:
     sec_per_frame: 2.2
+    sec_per_frame_gpu: 0.35     # MX450 + Iris Xe (DirectML réparti), mesuré
+    sec_per_frame_zerogpu: 0.08 # temps GPU par image sur ZeroGPU (estimation, recalée après le 1er rendu)
   face_tone:
     sec_per_frame: 2.9          # ≈ visage + 0,4 s de segmentation / recoloriage par visage
+    sec_per_frame_gpu: 0.5
+    sec_per_frame_zerogpu: 0.1
     tone_strength_l: 0.5        # part de la luminosité transférée (1 = tout, 0 = garde l'éclairage de la scène)
     tone_smoothing: 0.7         # EMA des stats de teint entre images (anti-scintillement)
+  character:                    # niveau 4 : Wan2.2-Animate-14B sur ton 2e Space ZeroGPU (space_character/)
+    max_s: 10                   # durée maximale d'un extrait
+    steps: 6                    # étapes de débruitage (qualité ↔ quota : 20 = qualité officielle, ×3 plus cher)
+    gpu_s_per_second:           # temps GPU par seconde d'extrait, pour 6 étapes (recalé après le 1er rendu)
+      360p: 12
+      480p: 26
+    feather: 0.015              # adoucissement du bord de la zone recollée (fraction de la hauteur)
 
 segment:
   min_s: 5
-  max_s: 30
+  max_s: 60
 
 upload:
   max_mb: 500
@@ -55,12 +85,19 @@ render:
   similarity_threshold: 0.28   # similarité cosinus minimale avec le visage cible
   smoothing: 0.6               # EMA des landmarks (0 = aucun lissage, 0.9 = très lissé)
   preview_every: 8             # frames entre deux aperçus live
+  fps_cap: 30                  # option « Limiter à 30 i/s » : cadence max (atteinte en gardant une image sur N)
+  duplicate_block_diff: 4.0    # écart max par bloc sous lequel une image est une copie de la précédente (0 = désactivé)
+  checkpoint_every_s: 120      # point de reprise enregistré toutes les N s de calcul (arrêt brutal = au plus N s perdues)
   default_sec_per_frame: 2.2   # estimation CPU avant le premier job mesuré (i7 4 cœurs ≈ 2,2 s)
 
 proxy:
   max_height: 720
   filmstrip_count: 60
   filmstrip_height: 90
+
+# GPU distant (Space Hugging Face ZeroGPU) : case « Utiliser le GPU » de chaque rendu, jamais activée d'office.
+zerogpu:
+  free_quota_min: 5            # quota quotidien d'un compte gratuit (40 en PRO)
 
 retention_hours: 48
 

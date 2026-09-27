@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import shutil
+import threading
 import time
+from collections import OrderedDict
+
 from pathlib import Path
 
+import cv2
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -13,6 +17,7 @@ from app import db
 from src import fetch, media
 from src.config import load_config
 from src.faces import ModelsMissing, detect, face_crop
+from src.scan import scan_passage
 
 from .common import background, get_or_404, jpeg_data_url, not_found, save_upload
 
@@ -203,3 +208,54 @@ def faces_at(video_id: str, t: float) -> dict:
             for f in faces
         ],
     }
+
+
+# Résultats de recherche par passage : l'analyse prend quelques secondes, on la garde en mémoire.
+_scan_cache: OrderedDict[tuple, dict] = OrderedDict()
+_scan_lock = threading.Lock()
+
+
+@router.get("/{video_id}/scan")
+def scan(video_id: str, start: float, end: float) -> dict:
+    """Personnes présentes dans le passage [start, end] : une entrée par personne, avec sa meilleure apparition."""
+    video = get_or_404("videos", video_id, "Vidéo")
+    if video["status"] != "ready":
+        raise HTTPException(409, "Vidéo pas encore prête.")
+    duration = video["info"]["duration"]
+    start, end = max(0.0, start), min(end, duration)
+    if end - start < 0.5:
+        raise HTTPException(422, "Passage trop court.")
+    key = (video_id, round(start, 2), round(end, 2))
+    with _scan_lock:
+        if key in _scan_cache:
+            _scan_cache.move_to_end(key)
+            return _scan_cache[key]
+    source = Path(video["source"]) if video.get("source") and Path(video["source"]).is_file() \
+        else db.folder("videos", video_id) / "proxy.mp4"
+    try:
+        people, frames = scan_passage(source, start, end)
+    except ModelsMissing as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+    def preview(img):
+        scale = min(1.0, 720 / img.shape[0])
+        return jpeg_data_url(cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA), 82)
+
+    result = {
+        "start": start,
+        "end": end,
+        "samples": int(load_config().get("scan", {}).get("samples", 12)),
+        "faces": [
+            {"t": p.t, "box": p.box, "score": p.score, "seen": len(p.times), "height_px": p.height_px, "maybe_same": p.maybe_same,
+             "crop": jpeg_data_url(p.crop)}
+            for p in people
+        ],
+        "frames": {f"{t:.3f}": preview(img) for t, img in frames.items()},
+        "width": video["info"]["width"],
+        "height": video["info"]["height"],
+    }
+    with _scan_lock:
+        _scan_cache[key] = result
+        while len(_scan_cache) > 12:
+            _scan_cache.popitem(last=False)
+    return result

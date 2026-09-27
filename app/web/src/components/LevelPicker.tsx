@@ -4,6 +4,7 @@ import { AlertTriangle, Check, Cpu, Download, FlaskConical, Palette, PersonStand
 import { useState, type ReactNode } from "react";
 import { api, type Level, type Status } from "../lib/api";
 import { LEVELS, levelInfo } from "../lib/levels";
+import { openEngineSettings } from "./EngineSettings";
 import { Button, Notice, ProgressBar, cx } from "./ui";
 
 const ICONS: Record<Level, ReactNode> = {
@@ -15,7 +16,6 @@ const ICONS: Record<Level, ReactNode> = {
 
 const COMING: Partial<Record<Level, string>> = {
   head: "Pas encore disponible : la tête complète arrive dans une prochaine étape.",
-  character: "Pas encore disponible : arrive juste après le branchement du GPU ZeroGPU, qui est indispensable à ce niveau.",
 };
 
 export function LevelPicker({ value, onChange, status }: { value: Level; onChange: (l: Level) => void; status?: Status }) {
@@ -35,7 +35,7 @@ export function LevelPicker({ value, onChange, status }: { value: Level; onChang
     <section className="mb-6">
       <div className="mb-3 flex items-baseline justify-between">
         <h2 className="text-[13px] font-medium tracking-wide text-faint uppercase">Niveau de transformation</h2>
-        <span className="text-[12px] text-muted">Tout tourne sur ton CPU, sauf le niveau 4</span>
+        <span className="text-[12px] text-muted">Tout tourne sur ce PC ({status?.engine.label ?? "CPU"}), sauf le niveau 4</span>
       </div>
       <div role="radiogroup" aria-label="Niveau de transformation" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {LEVELS.map((lvl) => {
@@ -77,11 +77,11 @@ export function LevelPicker({ value, onChange, status }: { value: Level; onChang
               <div className="mt-auto flex flex-wrap gap-1.5 pt-1">
                 {lvl.gpuOnly ? (
                   <Badge tone="warn" icon={<Zap className="size-3" />}>
-                    GPU requis
+                    ZeroGPU requis
                   </Badge>
                 ) : (
                   <Badge tone="ok" icon={<Cpu className="size-3" />}>
-                    CPU ✓{s ? ` · ${s.sec_per_frame.toFixed(1).replace(".", ",")} s/img` : ""}
+                    Ce PC ✓{s ? ` · ${s.sec_per_frame.toFixed(s.sec_per_frame < 1 ? 2 : 1).replace(".", ",")} s/img` : ""}
                   </Badge>
                 )}
                 {lvl.experimental && (
@@ -136,6 +136,14 @@ export function LevelPicker({ value, onChange, status }: { value: Level; onChang
               ))}
             </ul>
           </div>
+          {shown === "character" && status && !status.gpu.character?.configured && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-raised p-3 ring-1 ring-line sm:col-span-2">
+              <span className="text-[13px]">Ce niveau tourne sur ton 2e Space ZeroGPU, qui n'est pas encore branché (une commande à lancer).</span>
+              <Button variant="primary" size="sm" icon={<Zap className="size-3.5" />} onClick={openEngineSettings}>
+                Brancher le Space du niveau 4
+              </Button>
+            </div>
+          )}
           {st && st.available && !st.ready && (
             <div className="sm:col-span-2">
               {st.installing ? (

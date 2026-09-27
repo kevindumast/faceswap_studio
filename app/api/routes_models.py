@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from app import db
 from src import models
 from src.config import load_config
+from src.hardware import engine_status
 from src.levels import CHARACTER, FACE, FACE_TONE, HEAD, MODEL_GROUPS
 
 from .common import background
@@ -23,20 +24,37 @@ def _download_state(group: str) -> dict | None:
     return json.loads(raw) if raw else None
 
 
-def sec_per_frame(level: str) -> float:
-    """Vitesse CPU mesurée sur cette machine (ramenée à un visage), sinon l'estimation de config.yaml."""
-    measured = db.get_meta(f"spf:{level}:cpu")
+def sec_per_frame(level: str, engine: str | None = None) -> float:
+    """Vitesse mesurée sur cette machine pour ce niveau et ce moteur (ramenée à un visage), sinon l'estimation de config.yaml.
+
+    Chaque moteur (cpu, dml, cuda) a sa propre mesure : un rendu sur carte graphique ne fausse pas l'estimation CPU.
+    """
+    engine = engine or engine_status()["accelerator"]
+    measured = db.get_meta(f"spf:{level}:{engine}")
     if measured:
         return float(measured)
-    if level == FACE:  # mesures faites avant l'existence des niveaux
+    if level == FACE and engine == "cpu":  # mesures faites avant l'existence des niveaux
         legacy = db.get_meta("sec_per_frame_single") or db.last_sec_per_frame()
         if legacy:
             return float(legacy)
-    levels = load_config().get("levels", {})
-    return float(levels.get(level, {}).get("sec_per_frame", 2.2))
+    defaults = load_config().get("levels", {}).get(level, {})
+    key = {"cpu": "sec_per_frame", "zerogpu": "sec_per_frame_zerogpu"}.get(engine, "sec_per_frame_gpu")
+    return float(defaults.get(key) or defaults.get("sec_per_frame", 2.2))
+
+
+def character_status() -> dict:
+    """Niveau 4 : Space branché ? + de quoi estimer le temps de GPU (mesures réelles dès le 1er rendu)."""
+    from app.worker.zerogpu_client import character_configured
+
+    ccfg = load_config().get("levels", {}).get(CHARACTER, {})
+    defaults = ccfg.get("gpu_s_per_second", {"360p": 12, "480p": 26})
+    per_second = {res: float(db.get_meta(f"character_gpu_s:{res}") or defaults.get(res, 12)) for res in ("360p", "480p")}
+    return {"configured": character_configured(), "space": db.get_meta("zerogpu_character_space") or None,
+            "max_s": float(ccfg.get("max_s", 10)), "steps": int(ccfg.get("steps", 6)), "gpu_s_per_second": per_second}
 
 
 def levels_status(available: tuple[str, ...]) -> dict:
+    engine = engine_status()["accelerator"]
     out = {}
     for level in (FACE, FACE_TONE, HEAD, CHARACTER):
         groups = MODEL_GROUPS.get(level, ())
@@ -50,7 +68,7 @@ def levels_status(available: tuple[str, ...]) -> dict:
             "install_mb": sum(GROUP_MB.get(g, 0) for g in missing),
             "installing": next((d for d in downloads.values() if d and d.get("running")), None),
             "install_error": next((d["error"] for d in downloads.values() if d and d.get("error")), None),
-            "sec_per_frame": sec_per_frame(level),
+            "sec_per_frame": sec_per_frame(level, engine),
         }
     return out
 

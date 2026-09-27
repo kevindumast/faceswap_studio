@@ -98,19 +98,23 @@ def setup(client, sample_video):
     vid = db.new_id()
     db.insert("videos", id=vid, kind="upload", title="mire", status="ready", progress=1,
               source=str(sample_video), info=info.to_dict(), created_at=time.time())
+    from app import library
+
+    person = library.create("Kevin")
+    np.save(library.root() / person["id"] / "p1.npy", np.ones(512, np.float32) / np.sqrt(512))
+    person["photos"].append({"id": "p1", "name": "a.jpg", "added_at": time.time()})
+    library._save(person)
     set_id = db.new_id()
     d = db.folder("faces", set_id)
     d.mkdir(parents=True)
-    np.save(d / "p1.npy", np.ones(512, np.float32) / np.sqrt(512))
-    (d / "set.json").write_text(json.dumps({"photos": [{"id": "p1", "name": "a.jpg", "ok": True, "person": "A"}],
-                                            "persons": [{"id": "A", "name": "Personne A"}]}), encoding="utf-8")
-    return vid, set_id
+    (d / "set.json").write_text(json.dumps({"people": [person["id"]], "rejected": []}), encoding="utf-8")
+    return vid, set_id, person["id"]
 
 
 def _job(client, setup, **extra):
-    vid, set_id = setup
+    vid, set_id, pid = setup
     body = {"video_id": vid, "face_set_id": set_id, "start": 1, "end": 7, "consent": True,
-            "mappings": [{"t": 1, "box": [0.1, 0.1, 0.3, 0.4], "person": "A"}], **extra}
+            "mappings": [{"t": 1, "box": [0.1, 0.1, 0.3, 0.4], "person": pid}], **extra}
     return client.post("/api/jobs", json=body)
 
 

@@ -1,10 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
-import { History } from "lucide-react";
+import { BookUser, History } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { api, type Job, type Level, type Mapping, type Video } from "./lib/api";
+import { api, type Job, type Level, type Mapping, type Status, type Video } from "./lib/api";
 import { Stepper } from "./components/Stepper";
 import { HistoryDrawer } from "./components/HistoryDrawer";
+import { LibraryDrawer } from "./components/LibraryDrawer";
+import { EngineSettings } from "./components/EngineSettings";
 import { Button, cx } from "./components/ui";
 import type { Selection } from "./components/trimmer/Trimmer";
 import { VideoStep } from "./steps/VideoStep";
@@ -40,6 +42,13 @@ function loadSession(): Session {
 export default function App() {
   const [s, setS] = useState<Session>(loadSession);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [engineOpen, setEngineOpen] = useState(false);
+  useEffect(() => {
+    const open = () => setEngineOpen(true);
+    window.addEventListener("open-engine-settings", open);
+    return () => window.removeEventListener("open-engine-settings", open);
+  }, []);
   const patch = useCallback((p: Partial<Session>) => setS((prev) => ({ ...prev, ...p })), []);
 
   useEffect(() => {
@@ -113,7 +122,10 @@ export default function App() {
           <div className="flex flex-1 justify-center">
             <Stepper current={step} reachable={reachable} onGo={(i) => patch({ step: i })} />
           </div>
-          <EngineStatus data={status.data} error={!!status.error} />
+          <EngineStatus data={status.data} error={!!status.error} onOpen={() => setEngineOpen(true)} />
+          <Button variant="ghost" size="sm" onClick={() => setLibraryOpen(true)} icon={<BookUser className="size-4" />} aria-label="Personnes">
+            <span className="hidden lg:inline">Personnes</span>
+          </Button>
           <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(true)} icon={<History className="size-4" />} aria-label="Historique">
             <span className="hidden lg:inline">Historique</span>
           </Button>
@@ -175,14 +187,23 @@ export default function App() {
       </main>
 
       <HistoryDrawer open={historyOpen} onClose={() => setHistoryOpen(false)} onOpenJob={openJob} />
+      <LibraryDrawer open={libraryOpen} onClose={() => setLibraryOpen(false)} />
+      <EngineSettings open={engineOpen} onClose={() => setEngineOpen(false)} status={status.data} />
     </div>
   );
 }
 
-function EngineStatus({ data, error }: { data?: { worker: boolean; models: boolean; ffmpeg: boolean; device: string }; error: boolean }) {
+function EngineStatus({ data, error, onOpen }: { data?: Status; error: boolean; onOpen: () => void }) {
   let tone: "ok" | "warn" | "down" = "ok";
-  let label = `Moteur prêt · ${data?.device === "cuda" ? "GPU" : "CPU"}`;
+  const engine = data?.engine;
+  const gpus = engine?.gpus.length ? ` · ${engine.gpus.join(" + ")}` : "";
+  let label = `Moteur prêt · ${engine?.label ?? "CPU"}${gpus}${data?.gpu.configured ? " · + ZeroGPU" : ""}`;
   let title = "API, worker, modèles et ffmpeg opérationnels.";
+  if (engine?.error) {
+    tone = "warn";
+    label = "Moteur mal configuré · CPU";
+    title = engine.error;
+  }
   if (error) {
     tone = "down";
     label = "API hors ligne";
@@ -198,10 +219,11 @@ function EngineStatus({ data, error }: { data?: { worker: boolean; models: boole
   }
   if (!data && !error) return null;
   return (
-    <span
-      title={title}
+    <button
+      onClick={onOpen}
+      title={`${title} · Cliquer pour les réglages du moteur`}
       className={cx(
-        "hidden shrink-0 items-center gap-2 rounded-full px-3 py-1 text-[12px] font-medium ring-1 sm:flex",
+        "hidden shrink-0 items-center gap-2 rounded-full px-3 py-1 text-[12px] font-medium ring-1 transition-colors hover:bg-raised sm:flex",
         tone === "ok" && "text-muted ring-line",
         tone === "warn" && "bg-warn-soft text-warn ring-warn/30",
         tone === "down" && "bg-danger-soft text-danger ring-danger/30",
@@ -209,6 +231,6 @@ function EngineStatus({ data, error }: { data?: { worker: boolean; models: boole
     >
       <span className={cx("size-1.5 rounded-full", tone === "ok" ? "bg-accent shadow-[0_0_6px_var(--color-accent)]" : tone === "warn" ? "bg-warn" : "bg-danger")} />
       {label}
-    </span>
+    </button>
   );
 }

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -161,10 +162,24 @@ def extract_frame(src: Path, t: float, max_height: int | None = None) -> np.ndar
     return frame
 
 
-def cut_segment(src: Path, dst: Path, start: float, end: float, size: tuple[int, int], has_audio: bool) -> None:
-    """Découpe précise à la frame (seek d'entrée + réencodage), à la taille de travail."""
+def capped_fps(fps_str: str, cap: float | None) -> str:
+    """Cadence de sortie ≤ cap, obtenue en divisant la cadence d'origine par un entier (60 → 30, 59,94 → 29,97, 50 → 25).
+
+    Diviser par un entier garde une image sur N, régulièrement : aucune saccade, contrairement à un 60 → 30 « approché ».
+    """
+    frac = Fraction(fps_str)
+    if not cap or frac <= Fraction(cap).limit_denominator(1000):
+        return fps_str
+    out = frac / math.ceil(frac / Fraction(cap).limit_denominator(1000))
+    return f"{out.numerator}/{out.denominator}"
+
+
+def cut_segment(src: Path, dst: Path, start: float, end: float, size: tuple[int, int], has_audio: bool,
+                fps_str: str | None = None) -> None:
+    """Découpe précise à la frame (seek d'entrée + réencodage), à la taille de travail (et à fps_str si donné)."""
     w, h = size
-    args = ["-ss", f"{start:.3f}", "-i", str(src), "-t", f"{end - start:.3f}", "-vf", f"scale={w}:{h},setsar=1",
+    vf = f"scale={w}:{h},setsar=1" + (f",fps={fps_str}" if fps_str else "")
+    args = ["-ss", f"{start:.3f}", "-i", str(src), "-t", f"{end - start:.3f}", "-vf", vf,
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p"]
     args += ["-c:a", "aac", "-b:a", "192k"] if has_audio else ["-an"]
     ffmpeg(*args, str(dst))
@@ -182,13 +197,20 @@ class FrameWriter:
             stdin=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=_NO_WINDOW,
         )
         self.size = size
+        self.dst = dst
+        self.count = 0
 
     def write(self, frame: np.ndarray) -> None:
         if (frame.shape[1], frame.shape[0]) != self.size:
             frame = cv2.resize(frame, self.size)
         self.proc.stdin.write(np.ascontiguousarray(frame).tobytes())
+        self.count += 1
 
     def close(self) -> None:
+        if self.count == 0:  # rien d'écrit (pause immédiate) : pas de fichier vide ou invalide
+            self.abort()
+            self.dst.unlink(missing_ok=True)
+            return
         self.proc.stdin.close()
         err = self.proc.stderr.read().decode("utf-8", "replace")
         if self.proc.wait() != 0:
@@ -251,15 +273,16 @@ def assemble_segment(swapped: Path, cut: Path, dst: Path, has_audio: bool, label
 
 
 def assemble_full(source: Path, swapped: Path, dst: Path, info: VideoInfo, size: tuple[int, int], start: float,
-                  end: float, label: Path | None, crf: int, preset: str) -> None:
-    """Sortie « vidéo complète » : avant + extrait swappé + après, audio d'origine complet."""
+                  end: float, label: Path | None, crf: int, preset: str, fps_str: str | None = None) -> None:
+    """Sortie « vidéo complète » : avant + extrait swappé + après, audio d'origine complet (à fps_str si donné)."""
     w, h = size
+    fps_out = fps_str or info.fps_str
     frame = 1 / info.fps
     parts, chains = [], []
     has_pre = start > frame
     has_post = end < info.duration - frame
     splits = int(has_pre) + int(has_post)
-    base = f"[0:v]scale={w}:{h},setsar=1,fps={info.fps_str}"
+    base = f"[0:v]scale={w}:{h},setsar=1,fps={fps_out}"
     if splits == 2:
         chains.append(f"{base},split=2[s0][s1]")
         pre_in, post_in = "[s0]", "[s1]"
@@ -269,7 +292,7 @@ def assemble_full(source: Path, swapped: Path, dst: Path, info: VideoInfo, size:
     if has_pre:
         chains.append(f"{pre_in}trim=end={start:.4f},setpts=PTS-STARTPTS[pre]")
         parts.append("[pre]")
-    chains.append(f"[1:v]scale={w}:{h},setsar=1,fps={info.fps_str},setpts=PTS-STARTPTS[mid]")
+    chains.append(f"[1:v]scale={w}:{h},setsar=1,fps={fps_out},setpts=PTS-STARTPTS[mid]")
     parts.append("[mid]")
     if has_post:
         chains.append(f"{post_in}trim=start={end:.4f},setpts=PTS-STARTPTS[post]")
@@ -289,3 +312,16 @@ def assemble_full(source: Path, swapped: Path, dst: Path, info: VideoInfo, size:
 
 def make_poster(src: Path, dst: Path, t: float = 0.0, max_height: int = 360) -> None:
     ffmpeg("-ss", f"{max(t, 0):.3f}", "-i", str(src), "-vf", f"scale=-2:'min({max_height},ih)'", "-frames:v", "1", "-q:v", "4", str(dst))
+
+
+def concat_videos(parts: list[Path], dst: Path) -> None:
+    """Recolle des morceaux encodés avec les mêmes réglages, sans réencodage (reprise après une pause)."""
+    if len(parts) == 1:
+        shutil.copy2(parts[0], dst)
+        return
+    listing = dst.with_suffix(".txt")
+    listing.write_text("".join(f"file '{p.resolve().as_posix()}'\n" for p in parts), encoding="utf-8")
+    try:
+        ffmpeg("-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy", str(dst))
+    finally:
+        listing.unlink(missing_ok=True)

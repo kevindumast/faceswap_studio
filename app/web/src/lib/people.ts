@@ -1,64 +1,54 @@
-import type { Box, FramesFaces, Mapping, Person } from "./api";
+import type { Box, Mapping, PassageScan, Person } from "./api";
 
-// Une couleur stable par personne (A, B, C…), reprise partout : photos, boîtes sur la vidéo, récapitulatif.
+// Une couleur et une lettre par personne de la vidéo (A, B, C… dans l'ordre où elles ont été ajoutées),
+// reprises partout : photos, cadres sur la vidéo, associations, récapitulatif.
 const COLORS = ["#c8ff3d", "#4de1ff", "#ff7ad9", "#b69bff", "#ffd166", "#7dffb3"];
+const NEUTRAL = "#9a9aa6";
 
-export function personColor(id: string | null | undefined): string {
-  if (!id) return "#9a9aa6";
-  return COLORS[(id.charCodeAt(0) - 65 + COLORS.length) % COLORS.length];
+export type PersonStyle = { color: string; letter: string; index: number };
+
+export function styleAt(index: number): PersonStyle {
+  if (index < 0) return { color: NEUTRAL, letter: "–", index };
+  return { color: COLORS[index % COLORS.length], letter: String.fromCharCode(65 + (index % 26)), index };
+}
+
+/** Style d'une personne (par son id) selon sa place dans la vidéo. */
+export function styleOf(persons: Person[], pid: string | null | undefined): PersonStyle {
+  return styleAt(pid ? persons.findIndex((p) => p.id === pid) : -1);
 }
 
 export function sameBox(a: Box, b: Box): boolean {
   return a.every((v, i) => Math.abs(v - b[i]) < 1e-4);
 }
 
-/** Index du visage détecté correspondant à une association (ou -1). */
-export function faceIndex(data: FramesFaces, m: Mapping): number {
-  if (Math.abs(m.t - data.t) > 0.01) return -1;
-  return data.faces.findIndex((f) => sameBox(f.box, m.box));
+/** Index de la personne du passage correspondant à une association (ou -1). */
+export function faceIndex(scan: PassageScan, m: Mapping): number {
+  return scan.faces.findIndex((f) => Math.abs(f.t - m.t) < 0.01 && sameBox(f.box, m.box));
 }
 
 /**
- * Réconcilie les associations avec les visages de l'image affichée et les personnes connues :
+ * Réconcilie les associations avec les personnes trouvées dans le passage et celles choisies pour la vidéo :
  * - garde les choix encore valides (y compris « ne pas remplacer ») ;
- * - donne automatiquement chaque personne pas encore utilisée au prochain visage libre (du plus grand au plus petit).
+ * - donne chaque personne pas encore utilisée au prochain visage libre, du plus présent au moins présent,
+ *   en sautant les visages signalés comme doublon probable (profil flou d'un visage déjà listé).
  */
-export function reconcile(mappings: Mapping[], data: FramesFaces, persons: Person[]): Mapping[] {
-  mappings = carryOver(mappings, data);
+export function reconcile(mappings: Mapping[], scan: PassageScan, persons: Person[]): Mapping[] {
   const known = new Set(persons.map((p) => p.id));
   const kept: Mapping[] = [];
   const takenFaces = new Set<number>();
   for (const m of mappings) {
-    const i = faceIndex(data, m);
+    const i = faceIndex(scan, m);
     if (i < 0 || takenFaces.has(i) || (m.person !== null && !known.has(m.person))) continue;
     kept.push(m);
     takenFaces.add(i);
   }
-  const usedPersons = new Set(kept.map((m) => m.person));
-  const free = persons.filter((p) => !usedPersons.has(p.id));
-  data.faces.forEach((f, i) => {
-    if (takenFaces.has(i) || !free.length) return;
-    kept.push({ t: data.t, box: f.box, person: free.shift()!.id });
+  const used = new Set(kept.map((m) => m.person));
+  const free = persons.filter((p) => !used.has(p.id));
+  scan.faces.forEach((f, i) => {
+    if (takenFaces.has(i) || f.maybe_same !== null || !free.length) return;
+    kept.push({ t: f.t, box: f.box, person: free.shift()!.id });
   });
   return kept;
-}
-
-/**
- * Associations faites sur une autre image du passage (Début / Milieu / Fin) : on les reporte sur les visages
- * de l'image affichée par proximité horizontale (dans un clip, les gens changent rarement de côté).
- */
-function carryOver(mappings: Mapping[], data: FramesFaces): Mapping[] {
-  if (!mappings.length || mappings.some((m) => Math.abs(m.t - data.t) <= 0.01)) return mappings;
-  const cx = (b: Box) => (b[0] + b[2]) / 2;
-  const free = data.faces.map((_, i) => i);
-  const out: Mapping[] = [];
-  for (const m of [...mappings].sort((a, b) => cx(a.box) - cx(b.box))) {
-    if (!free.length) break;
-    const best = free.reduce((k, i) => (Math.abs(cx(data.faces[i].box) - cx(m.box)) < Math.abs(cx(data.faces[k].box) - cx(m.box)) ? i : k));
-    free.splice(free.indexOf(best), 1);
-    out.push({ t: data.t, box: data.faces[best].box, person: m.person });
-  }
-  return out;
 }
 
 export function mappingsEqual(a: Mapping[], b: Mapping[]): boolean {
