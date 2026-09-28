@@ -1,7 +1,7 @@
 """Recherche des personnes d'un passage : répartition des images et repérage des doublons probables."""
 import numpy as np
 
-from src.scan import Person, _flag_probable_duplicates, sample_times
+from src.scan import Person, _flag_probable_duplicates, next_samples, sample_times
 
 
 def _person(emb, seen: int, score: float) -> Person:
@@ -14,6 +14,23 @@ def test_sample_times_cover_the_passage():
     assert len(times) == 12
     assert 200.0 < times[0] < 201 and 219 < times[-1] < 220.0
     assert all(b > a for a, b in zip(times, times[1:]))
+
+
+def test_more_samples_keep_the_frames_already_analysed():
+    """« Plus d'images » ajoute des instants entre les anciens : les visages déjà associés restent retrouvables."""
+    for start, end in [(200.0, 220.0), (3.37, 5.91), (0.0, 7.3)]:
+        base = sample_times(start, end, 12)
+        for density in (1, 2, 3):
+            dense = sample_times(start, end, 12, density)
+            assert len(dense) == 11 * 2 ** density + 1
+            assert set(base) <= set(dense)
+            assert set(sample_times(start, end, 12, density - 1)) <= set(dense)
+
+
+def test_no_more_samples_once_frames_are_close_together():
+    assert next_samples(200.0, 220.0, 12, 0) == 23
+    assert next_samples(200.0, 220.0, 12, 3) is None          # niveau maximal
+    assert next_samples(0.0, 2.0, 12, 1) is None              # 45 images sur 2 s : moins de 0,1 s entre deux
 
 
 def test_blurry_single_sighting_similar_to_main_person_is_flagged():

@@ -22,7 +22,7 @@ import numpy as np
 
 from app import db
 from src.identity import SourceFace, analyze_photo, analyze_region, average_embedding, read_image_full
-from src.levels import FACE_TONE, PersonAssets
+from src.levels import CHARACTER, FACE_TONE, HEAD, PersonAssets
 
 # Similarité cosinus ArcFace : même personne ≈ 0,4–0,8 ; personnes différentes < 0,25.
 SAME_PERSON = 0.35
@@ -264,8 +264,9 @@ def move_photo(pid: str, photo_id: str, target: str) -> str:
         for f in src_dir.glob(f"{photo_id}*"):
             shutil.move(str(f), dst_dir / f.name)
         source["photos"] = [ph for ph in source["photos"] if ph["id"] != photo_id]
-        if source.get("reference_photo") == photo_id:   # photo de référence du niveau 4 partie ailleurs
-            source["reference_photo"] = None
+        for key in REFERENCE_KEYS.values():             # photo de référence (niveau 3 ou 4) partie ailleurs
+            if source.get(key) == photo_id:
+                source[key] = None
         dest["photos"].append(photo)
         _save(dest)
         if source["photos"]:
@@ -280,8 +281,9 @@ def delete_photo(pid: str, photo_id: str) -> bool:
     with _lock:
         person = load(pid)
         person["photos"] = [ph for ph in person["photos"] if ph["id"] != photo_id]
-        if person.get("reference_photo") == photo_id:
-            person["reference_photo"] = None
+        for key in REFERENCE_KEYS.values():
+            if person.get(key) == photo_id:
+                person[key] = None
         for f in _dir(pid).glob(f"{photo_id}*"):
             f.unlink(missing_ok=True)
         if not person["photos"]:
@@ -322,52 +324,69 @@ def photo_paths(pid: str) -> list[Path]:
     return out
 
 
-def _manual_reference(person: dict) -> str | None:
-    ref = person.get("reference_photo")
+# Photo choisie à la main, par niveau : tête (niveau 3), personne entière (niveau 4).
+REFERENCE_KEYS = {HEAD: "head_photo", CHARACTER: "reference_photo"}
+
+
+def _manual_reference(person: dict, level: str = CHARACTER) -> str | None:
+    ref = person.get(REFERENCE_KEYS[level])
     return ref if ref and any(ph["id"] == ref for ph in person["photos"]) else None
 
 
-def set_reference(pid: str, photo_id: str | None) -> dict:
-    """Impose la photo du niveau 4 (None : retour au choix automatique, la plus en pied)."""
+def _photo_path(pid: str, photo_id: str) -> Path:
+    full = _dir(pid) / f"{photo_id}_full.jpg"
+    return full if full.is_file() else _dir(pid) / f"{photo_id}.jpg"
+
+
+def set_reference(pid: str, photo_id: str | None, level: str = CHARACTER) -> dict:
+    """Impose la photo du niveau 4 ou de la tête du niveau 3 (None : retour au choix automatique)."""
     with _lock:
         person = load(pid)
         if photo_id is not None and all(ph["id"] != photo_id for ph in person["photos"]):
             raise PersonNotFound(photo_id)
-        person["reference_photo"] = photo_id
+        person[REFERENCE_KEYS[level]] = photo_id
         _save(person)
     return framing(pid)
 
 
 def framing(pid: str) -> dict:
-    """Cadrage de chaque photo pour le niveau 4 : part de la hauteur occupée par le visage (petit = photo en pied).
+    """Cadrage de chaque photo pour le niveau 4 : part de la hauteur occupée par le visage (petit = photo en pied),
+    et note de la photo pour la tête du niveau 3 (grand visage, de face).
 
     Calculé une fois par photo puis gardé dans la fiche ; « reference » = la photo que le niveau 4 utilisera
-    (même choix que le worker : la plus en pied).
+    (même choix que le worker : la plus en pied), « head_reference » celle du niveau 3 (la plus de face).
     """
     from src.character import face_ratio, framing_of
+    from src.head import head_score
 
     person = load(pid)
     d = _dir(pid)
-    changed = False
+    computed: dict[str, dict] = {}
     for ph in person["photos"]:
         if "face_ratio" not in ph:
-            full = d / f"{ph['id']}_full.jpg"
-            ph["face_ratio"] = face_ratio(full if full.is_file() else d / f"{ph['id']}.jpg")
-            changed = True
-    if changed:
+            ph["face_ratio"] = face_ratio(_photo_path(pid, ph["id"]))
+            computed.setdefault(ph["id"], {})["face_ratio"] = ph["face_ratio"]
+        if "head_score" not in ph:
+            ph["head_score"] = head_score(_photo_path(pid, ph["id"]))
+            computed.setdefault(ph["id"], {})["head_score"] = ph["head_score"]
+    if computed:
         with _lock:
             fresh = load(pid)            # une photo a pu être ajoutée ou retirée entre-temps
-            ratios = {ph["id"]: ph["face_ratio"] for ph in person["photos"]}
             for ph in fresh["photos"]:
-                if ph["id"] in ratios and "face_ratio" not in ph:
-                    ph["face_ratio"] = ratios[ph["id"]]
+                for key, value in computed.get(ph["id"], {}).items():
+                    ph.setdefault(key, value)
             # Simple cache : ni la date « modifiée le » ni l'ordre de la bibliothèque ne changent.
             (d / "person.json").write_text(json.dumps(fresh, ensure_ascii=False), encoding="utf-8")
     scored = [ph for ph in person["photos"] if ph.get("face_ratio") is not None]
     auto = min(scored, key=lambda ph: ph["face_ratio"])["id"] if scored else None
-    manual = _manual_reference(person)
+    heads = [ph for ph in person["photos"] if ph.get("head_score") is not None]
+    auto_head = max(heads, key=lambda ph: ph["head_score"])["id"] if heads else None
+    manual, manual_head = _manual_reference(person), _manual_reference(person, HEAD)
     return {"reference": manual or auto, "auto_reference": auto, "manual": manual is not None,
-            "photos": {ph["id"]: {"face_ratio": ph.get("face_ratio"), "framing": framing_of(ph.get("face_ratio"))}
+            "head_reference": manual_head or auto_head, "auto_head_reference": auto_head,
+            "head_manual": manual_head is not None,
+            "photos": {ph["id"]: {"face_ratio": ph.get("face_ratio"), "framing": framing_of(ph.get("face_ratio")),
+                                  "head_score": ph.get("head_score")}
                        for ph in person["photos"]}}
 
 
@@ -382,22 +401,24 @@ def assets(pid: str, level: str) -> PersonAssets:
     out = PersonAssets(source=SourceFace(average_embedding(embs)), photos=photo_paths(pid))
     ref = _manual_reference(person)
     if ref:   # photo choisie à la main pour le niveau 4
-        full = _dir(pid) / f"{ref}_full.jpg"
-        out.reference = full if full.is_file() else _dir(pid) / f"{ref}.jpg"
-    if level in (FACE_TONE,):
+        out.reference = _photo_path(pid, ref)
+    if level == HEAD:   # photo de la tête : choisie à la main, sinon la plus de face (même choix que l'interface)
+        head = framing(pid)["head_reference"]
+        out.head_reference = _photo_path(pid, head) if head else None
+    if level in (FACE_TONE, HEAD):
         from src.assets import person_tone
-        from src.tone import ToneStats
+        from src.tone import VERSION, ToneStats
 
         key = ",".join(sorted(ph["id"] for ph in person["photos"]))
         cache = _dir(pid) / "tone.json"
         cached = json.loads(cache.read_text(encoding="utf-8")) if cache.is_file() else None
-        if cached and cached.get("key") == key:
+        if cached and cached.get("key") == key and cached.get("v") == VERSION:
             out.tone = ToneStats.from_dict(cached["tone"])
-        else:
+        else:   # photos changées ou calcul du teint amélioré depuis
             out.tone = person_tone(out.photos)
             if out.tone is None:
                 raise RuntimeError(f"Teint introuvable sur les photos de {person['name']} (visage trop petit ou masqué).")
-            cache.write_text(json.dumps({"key": key, "tone": out.tone.to_dict()}), encoding="utf-8")
+            cache.write_text(json.dumps({"key": key, "v": VERSION, "tone": out.tone.to_dict()}), encoding="utf-8")
     return out
 
 

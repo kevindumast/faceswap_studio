@@ -1,5 +1,5 @@
 onnxruntime-gpu[cuda,cudnn]
-insightface
+insightface==2.0
 onnx
 opencv-python-headless
 numpy

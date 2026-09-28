@@ -1,17 +1,36 @@
 import { AnimatePresence, motion } from "motion/react";
-import { ChevronLeft, ChevronRight, PersonStanding, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, PersonStanding, UserRound, X } from "lucide-react";
 import { useEffect } from "react";
-import type { Framing, PersonFraming, Photo } from "../lib/api";
+import type { Framing, PersonFraming, Photo, ReferenceLevel } from "../lib/api";
 import { cx } from "./ui";
 
-export const FRAMING_TEXT: Record<Framing, { label: string; hint: string; tone: "ok" | "warn" | "muted" }> = {
+type Advice = { label: string; hint: string; tone: "ok" | "warn" | "muted" };
+
+export const FRAMING_TEXT: Record<Framing, Advice> = {
   full: { label: "De la tête aux pieds", hint: "Idéal pour le niveau 4 : corps et habits repris de cette photo.", tone: "ok" },
   half: { label: "À mi-corps", hint: "Au niveau 4, le bas du corps (pantalon, chaussures) sera inventé.", tone: "warn" },
   portrait: { label: "Portrait", hint: "Au niveau 4, le corps et les habits seront inventés.", tone: "muted" },
   none: { label: "Visage non détecté", hint: "Cette photo ne peut pas servir de référence.", tone: "muted" },
 };
 
-/** Photo en grand (version 1024 px, non recadrée), avec son cadrage pour le niveau 4. ← → pour naviguer, Échap pour fermer. */
+/** Qualité d'une photo pour la tête du niveau 3 (note : visage grand et de face). */
+export function headAdvice(score: number | null | undefined): Advice {
+  if (score == null) return { label: "Visage non détecté", hint: "Cette photo ne peut pas servir pour la tête.", tone: "muted" };
+  if (score >= 0.5) return { label: "Visage de face, en gros plan", hint: "Idéal pour le niveau 3 : tête, cheveux et teint repris de cette photo.", tone: "ok" };
+  if (score >= 0.2) return { label: "Visage petit ou un peu de biais", hint: "Au niveau 3, la tête sera moins nette ou moins fidèle.", tone: "warn" };
+  return { label: "Visage trop petit ou de profil", hint: "Au niveau 3, préfère une photo de face en gros plan.", tone: "muted" };
+}
+
+/** Photo retenue pour ce niveau, et si elle a été choisie à la main. */
+export function referenceOf(framing: PersonFraming | undefined, level: ReferenceLevel): { id: string | null; manual: boolean } {
+  if (!framing) return { id: null, manual: false };
+  return level === "head"
+    ? { id: framing.head_reference, manual: framing.head_manual }
+    : { id: framing.reference, manual: framing.manual };
+}
+
+/** Photo en grand (version 1024 px, non recadrée), avec son intérêt pour le niveau 4 (cadrage) ou pour la tête du
+ *  niveau 3. ← → pour naviguer, Échap pour fermer. */
 export function PhotoViewer({
   photos,
   index,
@@ -21,21 +40,27 @@ export function PhotoViewer({
   onClose,
   onChooseReference,
   choosing,
+  referenceLevel = "character",
 }: {
   photos: Photo[];
   index: number | null;
   framing?: PersonFraming;
   framingError?: string;
-  /** Choix de la photo du niveau 4 (null : retour au choix automatique). Sans ce rappel : simple visionneuse. */
+  /** Choix de la photo de ce niveau (null : retour au choix automatique). Sans ce rappel : simple visionneuse. */
   onChooseReference?: (photoId: string | null) => void;
   choosing?: boolean;
   onIndex: (i: number) => void;
   onClose: () => void;
+  /** Niveau dont on regarde / choisit la photo : tête (3) ou personne entière (4). */
+  referenceLevel?: ReferenceLevel;
 }) {
   const photo = index != null ? photos[index] : undefined;
   const info = photo ? framing?.photos[photo.id] : undefined;
-  const text = info ? FRAMING_TEXT[info.framing] : undefined;
-  const isReference = !!photo && framing?.reference === photo.id;
+  const head = referenceLevel === "head";
+  const text = info ? (head ? headAdvice(info.head_score) : FRAMING_TEXT[info.framing]) : undefined;
+  const ref = referenceOf(framing, referenceLevel);
+  const isReference = !!photo && ref.id === photo.id;
+  const forLevel = head ? "pour la tête (niveau 3)" : "pour le niveau 4";
 
   useEffect(() => {
     if (index == null) return;
@@ -115,12 +140,12 @@ export function PhotoViewer({
                     text.tone === "muted" && "bg-white/10 text-white/80",
                   )}
                 >
-                  <PersonStanding className="size-3.5" /> {text.label}
+                  {head ? <UserRound className="size-3.5" /> : <PersonStanding className="size-3.5" />} {text.label}
                 </span>
                 <span className="text-white/70">{text.hint}</span>
                 {isReference && (
                   <span className="rounded-full bg-white/10 px-2.5 py-1 text-white/90">
-                    Photo utilisée au niveau 4{framing?.manual ? " (ton choix)" : " (choix automatique)"}
+                    Photo utilisée {forLevel}{ref.manual ? " (ton choix)" : " (choix automatique)"}
                   </span>
                 )}
                 {onChooseReference && !isReference && (
@@ -129,10 +154,10 @@ export function PhotoViewer({
                     disabled={choosing}
                     className="rounded-full bg-accent px-3 py-1 font-medium text-accent-ink hover:brightness-110 disabled:opacity-60"
                   >
-                    Utiliser pour le niveau 4
+                    Utiliser {forLevel}
                   </button>
                 )}
-                {onChooseReference && isReference && framing?.manual && (
+                {onChooseReference && isReference && ref.manual && (
                   <button onClick={() => onChooseReference(null)} disabled={choosing} className="rounded-full px-3 py-1 text-white/70 underline-offset-2 hover:underline">
                     Revenir au choix automatique
                   </button>

@@ -156,6 +156,10 @@ def friendly(exc: Exception) -> str:
     """Messages compréhensibles pour les erreurs les plus fréquentes."""
     msg = str(exc)
     low = msg.lower()
+    if "handshake failure" in low or "read operation timed out" in low or "certificate verify failed" in low:
+        return ("Connexion au Space refusée par le réseau (filtre du réseau d'entreprise sur *.hf.space ?). "
+                "Hugging Face voit le Space prêt, mais ce PC ne peut pas l'atteindre : fais autoriser *.hf.space "
+                "par ton service informatique, ou utilise l'appli depuis un autre réseau.")
     if "quota" in low:
         return "Quota ZeroGPU épuisé pour aujourd'hui (5 min/jour en gratuit, 40 en PRO). Relance sur ce PC ou réessaie demain."
     if "app_key" in low:

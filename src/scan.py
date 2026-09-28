@@ -35,13 +35,31 @@ class Person:
         return self.embedding_sum / np.linalg.norm(self.embedding_sum)
 
 
-def sample_times(start: float, end: float, samples: int) -> list[float]:
-    """Instants répartis sur le passage, en évitant les toutes premières et dernières images (fondus, coupes)."""
+# « Plus d'images » à l'étape Visages : chaque niveau double la densité (12 → 23 → 45 → 89 images).
+MAX_DENSITY = 3
+MIN_SPACING = 0.1   # s ; plus serré, les images voisines montrent les mêmes visages
+
+
+def sample_times(start: float, end: float, samples: int, density: int = 0) -> list[float]:
+    """Instants répartis sur le passage, en évitant les toutes premières et dernières images (fondus, coupes).
+
+    Chaque niveau de densité ajoute une image entre deux images déjà analysées : les instants d'un niveau restent
+    dans le suivant, donc les visages déjà trouvés (et les associations faites dessus) sont retrouvés à l'identique.
+    """
     margin = min(0.2, (end - start) / (samples * 4))
-    return [round(float(t), 3) for t in np.linspace(start + margin, end - margin, samples)]
+    n = (samples - 1) * 2 ** density + 1
+    return [round(float(t), 3) for t in np.linspace(start + margin, end - margin, n)]
 
 
-def scan_passage(source: Path, start: float, end: float) -> tuple[list[Person], dict[float, np.ndarray]]:
+def next_samples(start: float, end: float, samples: int, density: int) -> int | None:
+    """Nombre d'images au niveau de densité suivant, ou None si le passage est déjà analysé assez finement."""
+    if density >= MAX_DENSITY:
+        return None
+    times = sample_times(start, end, samples, density + 1)
+    return len(times) if len(times) > 1 and times[1] - times[0] >= MIN_SPACING else None
+
+
+def scan_passage(source: Path, start: float, end: float, density: int = 0) -> tuple[list[Person], dict[float, np.ndarray]]:
     """Personnes du passage (les plus présentes d'abord) + toutes les images analysées."""
     cfg = load_config()
     sc = cfg.get("scan", {})
@@ -52,7 +70,7 @@ def scan_passage(source: Path, start: float, end: float) -> tuple[list[Person], 
 
     frames: dict[float, np.ndarray] = {}
     candidates = []
-    for t in sample_times(start, end, samples):
+    for t in sample_times(start, end, samples, density):
         try:
             frame = media.extract_frame(source, t, max_height)
         except media.MediaError:

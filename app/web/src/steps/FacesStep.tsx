@@ -14,6 +14,7 @@ import {
   MoveRight,
   Pencil,
   ScanFace,
+  ScanSearch,
   Search,
   ShieldCheck,
   Sparkles,
@@ -37,14 +38,16 @@ import {
   type Person,
   type Photo,
   type ScanFace as PassageFace,
+  type Target,
+  type ReferenceLevel,
   type Status,
   type Video,
 } from "../lib/api";
-import { faceIndex, mappingsEqual, reconcile, styleAt, styleOf, type PersonStyle } from "../lib/people";
+import { faceIndex, mappingsEqual, reconcile, sameBox, styleAt, styleOf, type PersonStyle } from "../lib/people";
 import { timecode } from "../lib/time";
 import { LevelPicker } from "../components/LevelPicker";
 import { PhotoViewer } from "../components/PhotoViewer";
-import { ReferenceBadge, useChooseReference, useFraming } from "../components/PersonReference";
+import { ReferenceBadge, referenceOf, useChooseReference, useFraming } from "../components/PersonReference";
 import { Button, Card, Menu, MenuItem, Notice, SectionTitle, cx } from "../components/ui";
 import type { Selection } from "../components/trimmer/Trimmer";
 
@@ -150,10 +153,9 @@ function SourcePanel(p: Props & { data?: FaceSet }) {
   const move = useMutation({
     mutationFn: async ({ pid, photo, to }: { pid: string; photo: string; to: string }) => {
       const r = await api.movePhoto(pid, photo, to);
-      if (to === "new" && p.faceSetId) await api.addPersonToSet(p.faceSetId, r.moved_to);
-      return r;
+      return to === "new" && p.faceSetId ? api.addPersonToSet(p.faceSetId, r.moved_to) : null;
     },
-    onSuccess: refresh,
+    onSuccess: (set) => (set ? applySet(set) : refresh()),
   });
   const deleteRejected = useMutation({ mutationFn: (rid: string) => api.deleteRejected(p.faceSetId!, rid), onSuccess: applySet });
 
@@ -399,11 +401,13 @@ function PersonCard(p: {
   onDeletePhoto: (photo: string) => void;
   level: Level;
 }) {
-  // Niveau 4 : une seule photo part au Space ; clic sur une photo pour la voir en grand et la choisir.
+  // Niveaux 3 et 4 : une seule photo sert (la tête, ou la personne entière) ; clic sur une photo pour la voir en grand
+  // et la choisir.
   const [viewing, setViewing] = useState<number | null>(null);
-  const character = p.level === "character";
-  const framing = useFraming(p.person, character || viewing != null);
-  const choose = useChooseReference(p.person.id);
+  const refLevel = p.level === "character" || p.level === "head" ? p.level : null;
+  const framing = useFraming(p.person, refLevel != null || viewing != null);
+  const choose = useChooseReference(p.person.id, refLevel ?? "character");
+  const ref = refLevel ? referenceOf(framing.data, refLevel) : null;
   return (
     <div className="rounded-xl bg-raised p-3 ring-1 ring-line" style={{ boxShadow: `inset 3px 0 0 ${p.style.color}` }}>
       <div className="mb-2.5 flex items-center gap-2 pl-1">
@@ -438,12 +442,14 @@ function PersonCard(p: {
             onMove={(to) => p.onMove(ph.id, to)}
             onDelete={() => p.onDeletePhoto(ph.id)}
             onOpen={() => setViewing(i)}
-            reference={character && framing.data?.reference === ph.id ? { manual: framing.data.manual } : undefined}
+            reference={refLevel && ref?.id === ph.id ? { manual: ref.manual, level: refLevel } : undefined}
           />
         ))}
       </div>
-      {character && p.person.photos.length > 1 && (
-        <p className="mt-2 pl-1 text-[12px] text-muted">Clique sur une photo pour la voir en grand et choisir celle du niveau 4.</p>
+      {refLevel && p.person.photos.length > 1 && (
+        <p className="mt-2 pl-1 text-[12px] text-muted">
+          Clique sur une photo pour la voir en grand et choisir celle {refLevel === "head" ? "de la tête (niveau 3)" : "du niveau 4"}.
+        </p>
       )}
       <PhotoViewer
         photos={p.person.photos}
@@ -454,6 +460,7 @@ function PersonCard(p: {
         onClose={() => setViewing(null)}
         onChooseReference={(photoId) => choose.mutate(photoId)}
         choosing={choose.isPending}
+        referenceLevel={refLevel ?? "character"}
       />
     </div>
   );
@@ -505,8 +512,8 @@ function PhotoTile({
   onMove: (to: string) => void;
   onDelete: () => void;
   onOpen: () => void;
-  /** Photo retenue pour le niveau 4 (choisie à la main ou automatiquement). */
-  reference?: { manual: boolean };
+  /** Photo retenue pour la tête (niveau 3) ou le niveau 4 (choisie à la main ou automatiquement). */
+  reference?: { manual: boolean; level: ReferenceLevel };
 }) {
   const [menu, setMenu] = useState(false);
   return (
@@ -519,7 +526,7 @@ function PhotoTile({
         aria-label={`Voir ${photo.name} en grand`}
       >
         <img src={photo.crop_url} alt={photo.name} className="size-full object-cover" />
-        {reference && <ReferenceBadge manual={reference.manual} />}
+        {reference && <ReferenceBadge manual={reference.manual} level={reference.level} />}
       </button>
       <button
         onClick={() => window.confirm("Retirer cette personne de cette vidéo ? Elle reste dans ta bibliothèque.") && onDelete()}
@@ -606,6 +613,7 @@ function TargetPanel({
   const [shownT, setShownT] = useState<number | null>(null); // image affichée ; null = meilleure image du visage sélectionné
   const [selecting, setSelecting] = useState(false);
   const [openMenu, setOpenMenu] = useState<number | null>(null);
+  const [fresh, setFresh] = useState<Target[]>([]); // visages trouvés par la dernière analyse « Plus d'images »
   const scanKey = ["scan", video.id, selection.start, selection.end];
   const { data: scan, isFetching, error } = useQuery({
     queryKey: scanKey,
@@ -634,6 +642,23 @@ function TargetPanel({
       setFocus(0);
     },
   });
+  // Visages ratés (trop peu d'images analysées) : une image de plus entre deux déjà analysées. Les anciennes le restent,
+  // donc les associations déjà faites tiennent ; les visages apparus sont signalés.
+  const more = useMutation({
+    mutationFn: () => api.scanMore(video.id, selection.start, selection.end),
+    onMutate: () => {
+      setSelecting(false);
+      setOpenMenu(null);
+      addFace.reset();
+    },
+    onSuccess: (next) => {
+      const known = new Set((scan?.faces ?? []).map((f) => faceIndex(next, f)));
+      setFresh(next.faces.filter((_, i) => !known.has(i)).map(({ t, box }) => ({ t, box })));
+      if (focused) setFocus(Math.max(0, faceIndex(next, focused)));
+      qc.setQueryData<PassageScan>(scanKey, next);
+    },
+  });
+  const isFresh = (f: PassageFace) => fresh.some((x) => Math.abs(x.t - f.t) < 0.01 && sameBox(x.box, f.box));
   const focusFace = (i: number) => {
     setFocus(i);
     setShownT(null);
@@ -696,10 +721,10 @@ function TargetPanel({
         {selecting && scan && frameT !== undefined && (
           <RegionPicker aspect={video.info!.width / video.info!.height} busy={addFace.isPending} onPick={(box) => addFace.mutate({ t: frameT, box })} />
         )}
-        {isFetching && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/50 text-[13px] backdrop-blur-[2px]">
+        {(isFetching || more.isPending) && (
+          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-black/50 text-[13px] backdrop-blur-[2px]">
             <Loader2 className="size-6 animate-spin text-fg" />
-            Recherche des personnes dans tout le passage…
+            {more.isPending ? `Analyse de ${scan?.next_samples} images du passage…` : "Recherche des personnes dans tout le passage…"}
           </div>
         )}
         {frameT !== undefined && (
@@ -708,7 +733,7 @@ function TargetPanel({
       </div>
 
       {scan && frameTimes.length > 0 && (
-        <div className="mt-2 flex items-center justify-between gap-2">
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-1 text-[12px] text-muted">
             <Button variant="ghost" size="sm" className="px-2" aria-label="Image analysée précédente" disabled={frameIdx <= 0} onClick={() => showFrame(frameIdx - 1)}>
               <ChevronLeft className="size-4" />
@@ -720,18 +745,47 @@ function TargetPanel({
               <ChevronRight className="size-4" />
             </Button>
           </div>
-          <Button
-            variant={selecting ? "secondary" : "ghost"}
-            size="sm"
-            icon={selecting ? <X className="size-3.5" /> : <SquareDashedMousePointer className="size-3.5" />}
-            onClick={() => {
-              setSelecting(!selecting);
-              addFace.reset();
-            }}
-          >
-            {selecting ? "Annuler" : "Sélectionner un visage"}
-          </Button>
+          <div className="flex items-center gap-1">
+            {scan.next_samples !== null && (
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<ScanSearch className="size-3.5" />}
+                loading={more.isPending}
+                disabled={isFetching || addFace.isPending}
+                onClick={() => more.mutate()}
+                title={`Il manque quelqu'un ? Analyser ${scan.next_samples} images du passage au lieu de ${scan.samples}`}
+              >
+                Plus d'images
+              </Button>
+            )}
+            <Button
+              variant={selecting ? "secondary" : "ghost"}
+              size="sm"
+              icon={selecting ? <X className="size-3.5" /> : <SquareDashedMousePointer className="size-3.5" />}
+              disabled={more.isPending}
+              onClick={() => {
+                setSelecting(!selecting);
+                addFace.reset();
+              }}
+            >
+              {selecting ? "Annuler" : "Sélectionner un visage"}
+            </Button>
+          </div>
         </div>
+      )}
+      {more.error && (
+        <Notice tone="warn" className="mt-3">
+          {more.error.message}
+        </Notice>
+      )}
+      {more.data && !more.isPending && (
+        <Notice tone="info" className="mt-3">
+          {more.data.samples} images analysées :{" "}
+          {fresh.length
+            ? `${fresh.length} ${fresh.length > 1 ? "nouveaux visages, marqués" : "nouveau visage, marqué"} « nouveau » ci-dessous.`
+            : "aucun nouveau visage. S'il en manque encore un, indique-le avec « Sélectionner un visage »."}
+        </Notice>
       )}
       {selecting && !addFace.isPending && !addFace.error && (
         <p className="mt-1 text-[12px] text-muted">Trace un cadre autour du visage oublié (ou clique dessus s'il est petit). Change d'image avec les flèches si besoin.</p>
@@ -754,8 +808,10 @@ function TargetPanel({
       )}
       {scan && !scan.faces.length && (
         <Notice tone="warn" className="mt-4">
-          Aucun visage trouvé automatiquement, même sur {scan.samples} images. Indique-les avec « Sélectionner un visage », ou choisis un autre passage à
-          l'étape 2.
+          Aucun visage trouvé automatiquement, même sur {scan.samples} images.{" "}
+          {scan.next_samples !== null
+            ? "Essaie « Plus d'images », indique-les avec « Sélectionner un visage » ou choisis un autre passage à l'étape 2."
+            : "Indique-les avec « Sélectionner un visage », ou choisis un autre passage à l'étape 2."}
         </Notice>
       )}
 
@@ -789,6 +845,7 @@ function TargetPanel({
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5 text-[13px] font-medium">
                       Visage {i + 1}
+                      {isFresh(f) && <span className="rounded-full bg-accent-soft px-1.5 text-[10px] font-medium text-accent ring-1 ring-accent/30">nouveau</span>}
                       {f.manual && f.id && (
                         <button
                           onClick={(e) => {
@@ -925,7 +982,7 @@ function PassageFrame({
 }
 
 /** Calque de sélection : un cadre tracé à la souris (ou un clic, pour un petit visage) → zone en fractions 0-1 de l'image. */
-function RegionPicker({ aspect, busy, onPick }: { aspect: number; busy: boolean; onPick: (box: Box) => void }) {
+export function RegionPicker({ aspect, busy, onPick }: { aspect: number; busy: boolean; onPick: (box: Box) => void }) {
   const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const at = (e: React.PointerEvent<HTMLDivElement>) => {
     const r = e.currentTarget.getBoundingClientRect();

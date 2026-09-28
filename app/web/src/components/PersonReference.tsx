@@ -1,10 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { PersonStanding } from "lucide-react";
-import { api, type Person } from "../lib/api";
+import { PersonStanding, UserRound } from "lucide-react";
+import { api, type Person, type ReferenceLevel } from "../lib/api";
 import { FRAMING_TEXT } from "./PhotoViewer";
 import { cx } from "./ui";
 
-/** Cadrage des photos d'une personne + photo retenue pour le niveau 4 (même cache partout : bibliothèque, Visages, Rendu). */
+/** Cadrage des photos d'une personne + photos retenues pour les niveaux 3 et 4 (même cache partout : bibliothèque, Visages, Rendu). */
 export function useFraming(person: Person, enabled = true) {
   return useQuery({
     queryKey: ["framing", person.id, person.photos.map((ph) => ph.id).join(",")],
@@ -14,23 +14,30 @@ export function useFraming(person: Person, enabled = true) {
   });
 }
 
-/** Choisit la photo du niveau 4 (null : retour au choix automatique, la plus en pied). */
-export function useChooseReference(pid: string) {
+export { referenceOf } from "./PhotoViewer";
+
+/** Choisit la photo du niveau 4, ou de la tête au niveau 3 (null : retour au choix automatique). */
+export function useChooseReference(pid: string, level: ReferenceLevel = "character") {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (photoId: string | null) => api.setReference(pid, photoId),
+    mutationFn: (photoId: string | null) => api.setReference(pid, photoId, level),
     onSuccess: () => qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === "framing" && q.queryKey[1] === pid }),
   });
 }
 
-/** Pastille « 4 » sur la vignette de la photo retenue pour le niveau 4. */
-export function ReferenceBadge({ manual }: { manual: boolean }) {
+/** Pastille « 3 » ou « 4 » sur la vignette de la photo retenue pour ce niveau. */
+export function ReferenceBadge({ manual, level = "character" }: { manual: boolean; level?: ReferenceLevel }) {
+  const head = level === "head";
+  const title = head
+    ? manual ? "Photo choisie pour la tête (niveau 3)" : "Photo retenue automatiquement pour la tête (niveau 3 : la plus de face)"
+    : manual ? "Photo choisie pour le niveau 4" : "Photo retenue automatiquement pour le niveau 4 (la plus en pied)";
   return (
     <span
-      title={manual ? "Photo choisie pour le niveau 4" : "Photo retenue automatiquement pour le niveau 4 (la plus en pied)"}
+      title={title}
       className="pointer-events-none absolute bottom-1 left-1 flex h-5 items-center gap-0.5 rounded-full bg-accent px-1.5 text-[10px] font-semibold text-accent-ink shadow"
     >
-      <PersonStanding className="size-3" />4
+      {head ? <UserRound className="size-3" /> : <PersonStanding className="size-3" />}
+      {head ? 3 : 4}
     </span>
   );
 }

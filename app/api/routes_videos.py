@@ -19,7 +19,7 @@ from app import db
 from src import fetch, media
 from src.config import load_config
 from src.faces import ModelsMissing, detect, face_crop, iou
-from src.scan import Person, face_in_region, scan_passage
+from src.scan import Person, face_in_region, next_samples, sample_times, scan_passage
 
 from .common import background, get_or_404, jpeg_data_url, not_found, save_upload
 
@@ -28,6 +28,11 @@ router = APIRouter(prefix="/api/videos", tags=["videos"])
 
 class UrlIn(BaseModel):
     url: str
+
+
+class PassageIn(BaseModel):
+    start: float
+    end: float
 
 
 class RegionIn(BaseModel):
@@ -256,33 +261,55 @@ def _save_manual(video_id: str, faces: list[dict]) -> None:
     path.write_text(json.dumps(faces), encoding="utf-8")
 
 
+# Images en plus demandées pour un passage (« Plus d'images »), gardées avec la vidéo comme les visages ajoutés à la main :
+# le rendu et un rechargement de la page retrouvent la même analyse, donc les mêmes visages pour les associations.
+def _density_path(video_id: str) -> Path:
+    return db.folder("videos", video_id) / "scan_density.json"
+
+
+def _passage_key(start: float, end: float) -> str:
+    return f"{start:.2f}-{end:.2f}"
+
+
+def _load_densities(video_id: str) -> dict[str, int]:
+    path = _density_path(video_id)
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+
+
+def _passage(video_id: str, start: float, end: float) -> tuple[dict, float, float]:
+    video = get_or_404("videos", video_id, "Vidéo")
+    if video["status"] != "ready":
+        raise HTTPException(409, "Vidéo pas encore prête.")
+    start, end = max(0.0, start), min(end, video["info"]["duration"])
+    if end - start < 0.5:
+        raise HTTPException(422, "Passage trop court.")
+    return video, start, end
+
+
 @router.get("/{video_id}/scan")
 def scan(video_id: str, start: float, end: float) -> dict:
     """Personnes présentes dans le passage [start, end] : une entrée par personne, avec sa meilleure apparition.
 
     Les visages ajoutés à la main sur ce passage viennent en fin de liste.
     """
-    video = get_or_404("videos", video_id, "Vidéo")
-    if video["status"] != "ready":
-        raise HTTPException(409, "Vidéo pas encore prête.")
-    duration = video["info"]["duration"]
-    start, end = max(0.0, start), min(end, duration)
-    if end - start < 0.5:
-        raise HTTPException(422, "Passage trop court.")
-    key = (video_id, round(start, 2), round(end, 2))
+    video, start, end = _passage(video_id, start, end)
+    samples = int(load_config().get("scan", {}).get("samples", 12))
+    density = _load_densities(video_id).get(_passage_key(start, end), 0)
+    key = (video_id, round(start, 2), round(end, 2), density)
     with _scan_lock:
         result = _scan_cache.get(key)
         if result is not None:
             _scan_cache.move_to_end(key)
     if result is None:
         try:
-            people, frames = scan_passage(_scan_source(video), start, end)
+            people, frames = scan_passage(_scan_source(video), start, end, density)
         except ModelsMissing as exc:
             raise HTTPException(503, str(exc)) from exc
         result = {
             "start": start,
             "end": end,
-            "samples": int(load_config().get("scan", {}).get("samples", 12)),
+            "samples": len(sample_times(start, end, samples, density)),
+            "next_samples": next_samples(start, end, samples, density),
             "faces": [_scan_face(p) for p in people],
             "frames": {f"{t:.3f}": _preview(img) for t, img in frames.items()},
             "width": video["info"]["width"],
@@ -302,6 +329,29 @@ def scan(video_id: str, start: float, end: float) -> dict:
             with suppress(media.MediaError):
                 frames[k] = _preview(media.extract_frame(_scan_source(video), f["t"], int(load_config().render.max_height)))
     return {**result, "faces": result["faces"] + manual, "frames": frames}
+
+
+@router.post("/{video_id}/scan/more")
+def scan_more(video_id: str, body: PassageIn) -> dict:
+    """Analyse deux fois plus d'images du passage (une de plus entre deux déjà analysées), pour les visages ratés.
+
+    Les images déjà analysées le restent : les visages déjà trouvés gardent leurs apparitions, et les associations
+    faites dessus restent valables.
+    """
+    _, start, end = _passage(video_id, body.start, body.end)
+    samples = int(load_config().get("scan", {}).get("samples", 12))
+    k = _passage_key(start, end)
+    with _scan_lock:
+        densities = _load_densities(video_id)
+        density = densities.get(k, 0)
+        if next_samples(start, end, samples, density) is None:
+            raise HTTPException(409, "Ce passage est déjà analysé image par image, ou presque : "
+                                     "indique les visages oubliés avec « Sélectionner un visage ».")
+        densities[k] = density + 1
+        path = _density_path(video_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(densities), encoding="utf-8")
+    return scan(video_id, start, end)
 
 
 @router.post("/{video_id}/scan/faces")

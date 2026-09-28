@@ -78,10 +78,11 @@ export default function App() {
   const level: Level = status.data && !status.data.levels[s.level]?.available ? "face" : s.level;
   const ready = video.data?.status === "ready" ? video.data : null;
 
+  // Nouvelle vidéo = nouvelle création : aucune personne reprise de la précédente (la bibliothèque, elle, reste).
   const onVideoReady = useCallback(
     (v: Video) => {
       const d = v.info?.duration ?? 0;
-      patch({ videoId: v.id, selection: { start: 0, end: Math.min(10, Math.max(min, d)) }, mappings: [], jobId: null, step: 1 });
+      patch({ videoId: v.id, selection: { start: 0, end: Math.min(10, Math.max(min, d)) }, faceSetId: null, consent: false, mappings: [], jobId: null, step: 1 });
     },
     [patch, min],
   );
@@ -180,7 +181,7 @@ export default function App() {
                 jobId={s.jobId}
                 onJob={(id) => patch({ jobId: id })}
                 onEditSegment={() => patch({ step: 1, jobId: null })}
-                onNewVideo={() => patch({ ...EMPTY, faceSetId: s.faceSetId, consent: s.consent })}
+                onNewVideo={() => patch(EMPTY)}
               />
             )}
           </motion.div>
@@ -221,8 +222,9 @@ function EngineStatus({ data, error, onOpen }: { data?: Status; error: boolean; 
   const engine = data?.engine;
   const gpus = engine?.gpus.length ? ` · ${engine.gpus.join(" + ")}` : "";
   const gpu = useZeroGpuSummary(data);
-  let label = `Moteur prêt · ${engine?.label ?? "CPU"}${gpus}${gpu ? ` · ${gpu.label}` : ""}`;
-  let title = `API, worker, modèles et ffmpeg opérationnels.${gpu ? ` ${gpu.title}` : ""}`;
+  const gpuNotable = gpu && gpu.label !== "ZeroGPU prêt" && gpu.label !== "ZeroGPU endormi";
+  let label = `Moteur prêt${gpuNotable ? ` · ${gpu!.label}` : ""}`;
+  let title = `API, worker, modèles et ffmpeg opérationnels · ${engine?.label ?? "CPU"}${gpus}.${gpu ? ` ${gpu.title}` : ""}`;
   if (gpu?.tone === "warn") tone = "warn";
   if (engine?.error) {
     tone = "warn";

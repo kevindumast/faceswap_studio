@@ -1,6 +1,6 @@
 import type { Job } from "./api";
 
-export type StageKey = "cut" | "wake" | "queue" | "gpu" | "swap" | "pose" | "mask" | "generate" | "assemble";
+export type StageKey = "cut" | "wake" | "queue" | "gpu" | "swap" | "pose" | "mask" | "generate" | "assemble" | "fix" | "review";
 
 /**
  * Étape d'un rendu. Au niveau 4, chaque personne est un passage sur le Space : « generate@2/2 » = génération de la

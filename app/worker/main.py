@@ -12,11 +12,12 @@ from pathlib import Path
 from app import db
 from app.api.routes_faces import load_person_assets
 from app.worker.zerogpu_client import RemoteCancelled, ZeroGPUClient, wait_until_ready
-from src import media
+from src import media, review
 from src.character import Reference, choose_reference, face_ratio, recompose
 from src.config import accelerator, load_config
-from src.levels import CHARACTER, FACE
-from src.pipeline import Cancelled, FaceMapping, Paused, RenderOptions, RenderStats, assemble, cut, relative_targets, render
+from src.levels import CHARACTER, FACE, make_strategy
+from src.pipeline import (Cancelled, Checkpoint, FaceMapping, Paused, RenderOptions, RenderStats, assemble, cut, finish,
+                          relative_targets, render_frames)
 
 
 def remote_payload(params: dict, mappings: list[FaceMapping], start: float, length: float) -> dict:
@@ -177,6 +178,64 @@ def run_character(job: dict, source: Path, opts: RenderOptions, mappings: list[F
     return stats
 
 
+def job_options(params: dict) -> RenderOptions:
+    return RenderOptions(start=params["start"], end=params["end"], output=params["output"],
+                         stabilize=params["stabilize"], ai_label=params["ai_label"], level=params.get("level") or FACE,
+                         limit_fps=bool(params.get("limit_fps", False)), restore=bool(params.get("restore", False)))
+
+
+def back_to_review(job_id: str, params: dict, **extra) -> None:
+    """Fin d'une étape de la vérification (ou étape annulée) : le rendu attend de nouveau les choix de l'utilisateur."""
+    params = {k: v for k, v in params.items() if k != "review_step"}
+    db.update("jobs", job_id, status="review", stage="review", params=params, **extra)
+
+
+def run_review_step(job: dict, step: str, source: Path, out: Path, progress) -> None:
+    """Rendu arrêté avant l'assemblage : recalcul des images corrigées (fix), ou assemblage final (assemble)."""
+    params = job["params"]
+    opts = job_options(params)
+    plan = review.FramePlan.load(out)
+    if plan is None:
+        raise RuntimeError("Journal du rendu introuvable : relance le rendu.")
+    if step == "fix":
+        people: dict = {}
+
+        def make(m: int):
+            pid = plan.mappings[m]["person"]
+            if pid not in people:
+                people[pid] = load_person_assets(job["face_set_id"], pid, opts.level)
+            return make_strategy(opts.level, people[pid], opts.restore)
+
+        t0 = time.perf_counter()
+        try:
+            review.recompute(out / "cut.mp4", out / "swapped.mp4", plan, make, progress)
+        except Cancelled:
+            back_to_review(job["id"], params)
+            return
+        stats = review.load_stats(out)
+        stats.seconds += time.perf_counter() - t0
+        review.save_stats(out, stats)
+        back_to_review(job["id"], params, error=None)
+        return
+
+    t0 = time.perf_counter()
+    try:
+        segment = cut(source, opts, out, reuse=True)
+        finish(source, segment, opts, out, out / "result.mp4", progress)
+    except Cancelled:
+        back_to_review(job["id"], params)
+        return
+    stats = review.load_stats(out)
+    stats.seconds += time.perf_counter() - t0
+    review.save_stats(out, stats)
+    now = time.time()
+    params = {k: v for k, v in params.items() if k != "review_step"}
+    # « Temps total » affiché = calcul du rendu + corrections + assemblage (pas le temps passé à vérifier).
+    db.update("jobs", job["id"], status="done", params=params, started_at=now - stats.seconds, finished_at=now,
+              sec_per_frame=stats.sec_per_frame, warnings=stats.warnings + review.warnings_of(plan),
+              done=stats.frames, total=stats.frames)
+
+
 def run_job(job: dict) -> None:
     job_id = job["id"]
     out = db.folder("jobs", job_id)
@@ -186,24 +245,12 @@ def run_job(job: dict) -> None:
         raise RuntimeError("La vidéo source a été supprimée.")
     params = job["params"]
     level = params.get("level") or FACE
-    opts = RenderOptions(start=params["start"], end=params["end"], output=params["output"],
-                         stabilize=params["stabilize"], ai_label=params["ai_label"], level=level,
-                         limit_fps=bool(params.get("limit_fps", False)))
-    set_id = job["face_set_id"]
-    if params.get("mappings"):
-        # Données préparées une seule fois par personne, même si elle remplace plusieurs visages.
-        people = {p: load_person_assets(set_id, p, level) for p in {m["person"] for m in params["mappings"]}}
-        mappings = [
-            FaceMapping(people[m["person"]], target={"t": m["t"], "box": m["box"]}, label=f"Visage {i + 1} (personne {m['person']})")
-            for i, m in enumerate(params["mappings"])
-        ]
-    else:  # ancien format : toutes les photos → un seul visage
-        mappings = [FaceMapping(load_person_assets(set_id, None, level), target=params.get("target"))]
+    opts = job_options(params)
     last = [0.0]
 
     def progress(stage: str, done: int, total: int) -> None:
         now = time.time()
-        if stage == "swap" and done not in (1, total) and now - last[0] < 0.5:
+        if stage in ("swap", "fix") and done not in (1, total) and now - last[0] < 0.5:
             return
         last[0] = now
         status = db.job_status(job_id)
@@ -214,6 +261,22 @@ def run_job(job: dict) -> None:
         db.update("jobs", job_id, stage=stage, done=done, total=total)
         db.set_meta("worker_heartbeat", str(now))
 
+    if params.get("review_step"):
+        run_review_step(job, params["review_step"], Path(video["source"]), out, progress)
+        return
+
+    set_id = job["face_set_id"]
+    if params.get("mappings"):
+        # Données préparées une seule fois par personne, même si elle remplace plusieurs visages.
+        people = {p: load_person_assets(set_id, p, level) for p in {m["person"] for m in params["mappings"]}}
+        mappings = [
+            FaceMapping(people[m["person"]], target={"t": m["t"], "box": m["box"]},
+                        label=f"Visage {i + 1} (personne {m['person']})", person_id=m["person"])
+            for i, m in enumerate(params["mappings"])
+        ]
+    else:  # ancien format : toutes les photos → un seul visage
+        mappings = [FaceMapping(load_person_assets(set_id, None, level), target=params.get("target"))]
+
     if level == CHARACTER:
         # Niveau 4 : uniquement sur le Space « niveau 4 » (la case GPU est obligatoire, vérifiée à la création).
         stats, engine = run_character(job, Path(video["source"]), opts, mappings, out, progress), "zerogpu"
@@ -221,30 +284,47 @@ def run_job(job: dict) -> None:
         # Case « Utiliser le GPU » cochée pour CE rendu : calcul sur le Space ZeroGPU, jamais de repli sur le CPU.
         stats, engine = run_remote(job, Path(video["source"]), opts, mappings, out, progress), "zerogpu"
     else:
-        stats = render(
-            source=Path(video["source"]),
-            mappings=mappings,
-            opts=opts,
-            work_dir=out,
-            out=out / "result.mp4",
-            progress=progress,
-            preview=out / "preview.jpg",
-        )
+        source = Path(video["source"])
+        segment, stats = render_frames(source, mappings, opts, out, progress, preview=out / "preview.jpg")
         engine = accelerator()
+        remember_speed(level, engine, stats, len(mappings))
+        plan = review.FramePlan.load(out)
+        if params.get("review") and plan is not None and review.needs_review(out):
+            # Visages mal suivis : arrêt avant l'assemblage, l'utilisateur choisit quoi corriger.
+            Checkpoint.load(out).clear()
+            back_to_review(job_id, params, sec_per_frame=stats.sec_per_frame, warnings=stats.warnings,
+                           done=stats.frames, total=stats.frames)
+            return
+        finish(source, segment, opts, out, out / "result.mp4", progress)
+        if plan is None:
+            (out / "swapped.mp4").unlink(missing_ok=True)   # sans journal, rien à revoir : inutile de le garder
+        # swapped.mp4 et le journal restent (jusqu'au ménage automatique) : « Revoir les images » après coup.
+        warnings = stats.warnings + (review.warnings_of(plan) if plan is not None else [])
+        db.update("jobs", job_id, status="done", finished_at=time.time(), sec_per_frame=stats.sec_per_frame,
+                  warnings=warnings, done=stats.frames, total=stats.frames)
+        return
     (out / "swapped.mp4").unlink(missing_ok=True)
-    # Vitesse ramenée à un seul visage et mémorisée par (niveau, moteur), pour que les estimations restent justes
-    # (même formule que le frontend : chaque visage en plus ≈ +75 %).
-    factor = 1 + 0.75 * max(0, len(mappings) - 1)
-    # Par image réellement calculée : les copies sautées ne doivent pas rendre les estimations trop optimistes.
-    db.set_meta(f"spf:{level}:{engine}", str(stats.sec_per_computed / factor))
+    remember_speed(level, engine, stats, len(mappings))
     db.update("jobs", job_id, status="done", finished_at=time.time(), sec_per_frame=stats.sec_per_frame,
               warnings=stats.warnings, done=stats.frames, total=stats.frames)
+
+
+def remember_speed(level: str, engine: str, stats: RenderStats, faces: int) -> None:
+    """Vitesse ramenée à un seul visage et mémorisée par (niveau, moteur), pour que les estimations restent justes
+    (même formule que le frontend : chaque visage en plus ≈ +75 %)."""
+    factor = 1 + 0.75 * max(0, faces - 1)
+    # Par image réellement calculée : les copies sautées ne doivent pas rendre les estimations trop optimistes.
+    db.set_meta(f"spf:{level}:{engine}", str(stats.sec_per_computed / factor))
 
 
 def main() -> None:
     db.init()
     for j in db.all_rows("jobs", 500):
-        if j["status"] in ("running", "cancelling", "pausing"):
+        if j["status"] in ("running", "cancelling", "pausing") and j["params"].get("review_step"):
+            # Recalcul des corrections ou assemblage interrompu : les corrections restent marquées, à relancer.
+            back_to_review(j["id"], j["params"], error="Interrompu (worker ou PC redémarré) : relance le recalcul "
+                           "ou l'assemblage.")
+        elif j["status"] in ("running", "cancelling", "pausing"):
             if j["params"].get("use_gpu") or j["status"] == "cancelling":
                 db.update("jobs", j["id"], status="error", error="Interrompu (worker redémarré).", finished_at=time.time())
             else:  # rendu local : le point de reprise permet de continuer où il s'était arrêté
@@ -269,7 +349,10 @@ def main() -> None:
             print(f"‖ job {job['id']} en pause", flush=True)
         except Exception as exc:
             traceback.print_exc()
-            db.update("jobs", job["id"], status="error", error=str(exc)[:500], finished_at=time.time())
+            if job["params"].get("review_step"):   # la vérification reste possible : seule cette étape a échoué
+                back_to_review(job["id"], job["params"], error=str(exc)[:500])
+            else:
+                db.update("jobs", job["id"], status="error", error=str(exc)[:500], finished_at=time.time())
 
 
 if __name__ == "__main__":

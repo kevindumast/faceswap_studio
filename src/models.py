@@ -52,6 +52,12 @@ def group_files(group: str) -> list[Path]:
                 models / cfg.models.inswapper]
     if group == "tone":
         return [models / cfg.models.parser]
+    if group == "head":
+        from .head import FILES, model_path
+
+        return [model_path(name) for name in FILES]
+    if group == "restore":
+        return [models / cfg.models.restore]
     raise KeyError(group)
 
 
@@ -83,6 +89,24 @@ def ensure(group: str, on_progress: Progress | None = None) -> None:
         parser = models / cfg.models.parser
         if not parser.is_file():
             _fetch_first(list(cfg.models.parser_urls), parser, 50 << 20, report)
+    elif group == "head":
+        from .head import FILES, model_path
+
+        urls = cfg.models.get("head_urls", {})
+        sizes = {"feature_extractor": 3, "motion_extractor": 107, "generator": 212, "stitcher": 0.2, "lama": 198}
+        total, done = sum(sizes.values()), 0.0
+        for name in FILES:
+            dst = model_path(name)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if not dst.is_file():
+                share = sizes[name] / total
+                _fetch_first([u.format(file=dst.name) for u in urls.get(name, urls.get("live_portrait", []))], dst,
+                             int(sizes[name] * 0.8 * (1 << 20)), lambda f, d=done, s=share: report(d + f * s))
+            done += sizes[name] / total
+    elif group == "restore":
+        path = models / cfg.models.restore
+        if not path.is_file():
+            _fetch_first(list(cfg.models.get("restore_urls", [])), path, 300 << 20, report)
     else:
         raise KeyError(group)
     report(1.0)

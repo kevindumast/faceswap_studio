@@ -2,7 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { AlertTriangle, BookUser, Check, ChevronDown, ImagePlus, Loader2, Pencil, PersonStanding, Search, ShieldCheck, Trash2, UserPlus, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, type ImportResult, type PendingPhoto, type Person } from "../lib/api";
+import { api, type Box, type ImportResult, type PendingPhoto, type Person } from "../lib/api";
+import { RegionPicker } from "../steps/FacesStep";
 import { useChooseReference, useFraming } from "./PersonReference";
 import { FRAMING_TEXT, PhotoViewer } from "./PhotoViewer";
 import { Button, Notice, cx } from "./ui";
@@ -35,8 +36,8 @@ export function LibraryDrawer({ open, onClose }: { open: boolean; onClose: () =>
   const deletePerson = useMutation({ mutationFn: api.deletePerson, onSuccess: refresh });
   const deletePhoto = useMutation({ mutationFn: ({ pid, photo }: { pid: string; photo: string }) => api.deletePhoto(pid, photo), onSuccess: refresh });
   const deletePending = useMutation({ mutationFn: (rid: string) => api.deletePending(rid), onSuccess: refreshPending });
-  const namePending = useMutation({
-    mutationFn: ({ rid, name }: { rid: string; name: string }) => api.assignPending(rid, "new", name),
+  const assignPending = useMutation({
+    mutationFn: ({ rid, target, box, name }: { rid: string; target: string; box?: Box; name?: string }) => api.assignPending(rid, target, box, name),
     onSuccess: () => {
       refresh();
       refreshPending();
@@ -50,8 +51,29 @@ export function LibraryDrawer({ open, onClose }: { open: boolean; onClose: () =>
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
+  useEffect(() => {
+    if (!open) return;
+    const onPaste = (e: ClipboardEvent) => {
+      if (!consent) return;
+      const items = Array.from(e.clipboardData?.items ?? []);
+      const files = items
+        .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
+        .map((it, i) => {
+          const f = it.getAsFile();
+          return f && new File([f], `capture-${Date.now()}-${i}.png`, { type: f.type });
+        })
+        .filter((f): f is File => !!f);
+      if (files.length) {
+        e.preventDefault();
+        importPhotos.mutate(files);
+      }
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [open, consent, importPhotos]);
+
   const people = data ?? [];
-  const error = importPhotos.error ?? rename.error ?? deletePerson.error ?? deletePhoto.error ?? namePending.error;
+  const error = importPhotos.error ?? rename.error ?? deletePerson.error ?? deletePhoto.error ?? assignPending.error;
 
   return (
     <AnimatePresence>
@@ -118,6 +140,7 @@ export function LibraryDrawer({ open, onClose }: { open: boolean; onClose: () =>
                   }}
                 />
               </div>
+              {consent && <p className="text-[11px] text-faint">Ou colle une capture d'écran (Ctrl+V) directement ici.</p>}
               {lastImport && (
                 <p className="text-[12px] text-muted">
                   {lastImport.filter((r) => r.ok && !r.created).length} reconnue(s), {lastImport.filter((r) => r.ok && r.created).length} nouvelle(s),{" "}
@@ -138,8 +161,10 @@ export function LibraryDrawer({ open, onClose }: { open: boolean; onClose: () =>
                       <PendingRow
                         key={ph.id}
                         photo={ph}
-                        loading={namePending.isPending && namePending.variables?.rid === ph.id}
-                        onName={(name) => namePending.mutate({ rid: ph.id, name })}
+                        people={people}
+                        loading={assignPending.isPending && assignPending.variables?.rid === ph.id}
+                        onName={(name, box) => assignPending.mutate({ rid: ph.id, target: "new", name, box })}
+                        onAssign={(pid, box) => assignPending.mutate({ rid: ph.id, target: pid, box })}
                         onDelete={() => deletePending.mutate(ph.id)}
                       />
                     ))}
@@ -175,23 +200,56 @@ export function LibraryDrawer({ open, onClose }: { open: boolean; onClose: () =>
   );
 }
 
-/** Photo importée sans visage auto-détecté : on peut la retirer, ou la nommer pour en faire une personne. */
-function PendingRow(p: { photo: PendingPhoto; loading: boolean; onName: (name: string) => void; onDelete: () => void }) {
+/** Photo importée sans visage auto-détecté : on peut la retirer, la nommer, ou la rattacher à une personne existante — en traçant le visage à la main. */
+function PendingRow(p: {
+  photo: PendingPhoto;
+  people: Person[];
+  loading: boolean;
+  onName: (name: string, box: Box) => void;
+  onAssign: (personId: string, box: Box) => void;
+  onDelete: () => void;
+}) {
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState("");
-  const submit = () => {
-    const clean = name.trim();
-    if (clean) p.onName(clean);
+  const [framing, setFraming] = useState<{ kind: "new"; name: string } | { kind: "existing"; personId: string } | null>(null);
+  const [aspect, setAspect] = useState(1);
+
+  const pick = (box: Box) => {
+    if (!framing) return;
+    if (framing.kind === "new") p.onName(framing.name, box);
+    else p.onAssign(framing.personId, box);
   };
+
+  if (framing) {
+    return (
+      <li className="space-y-1.5">
+        <p className="text-[12px] text-muted">Trace un cadre serré autour du visage à retenir.</p>
+        <div className="relative overflow-hidden rounded-lg bg-black" style={{ aspectRatio: aspect }}>
+          <img
+            src={p.photo.full_url}
+            alt={p.photo.name}
+            className="size-full object-contain"
+            onLoad={(e) => setAspect(e.currentTarget.naturalWidth / e.currentTarget.naturalHeight || 1)}
+          />
+          <RegionPicker aspect={aspect} busy={p.loading} onPick={pick} />
+        </div>
+        <Button size="sm" variant="ghost" onClick={() => setFraming(null)} disabled={p.loading}>
+          Annuler
+        </Button>
+      </li>
+    );
+  }
+
   return (
     <li className="flex items-center gap-2.5">
-      <img src={p.photo.photo_url} alt={p.photo.name} className="size-12 shrink-0 rounded-lg object-cover opacity-60 grayscale" />
+      <img src={p.photo.photo_url} alt={p.photo.name} className="size-12 shrink-0 rounded-lg object-cover" />
       {naming ? (
         <form
           className="flex flex-1 gap-1.5"
           onSubmit={(e) => {
             e.preventDefault();
-            submit();
+            const clean = name.trim();
+            if (clean) setFraming({ kind: "new", name: clean });
           }}
         >
           <input
@@ -203,13 +261,33 @@ function PendingRow(p: { photo: PendingPhoto; loading: boolean; onName: (name: s
             placeholder="Nom de la personne…"
             className="h-8 min-w-0 flex-1 rounded-lg bg-bg px-2.5 text-[13px] ring-1 ring-accent outline-none"
           />
-          <Button type="submit" size="sm" variant="primary" loading={p.loading} disabled={!name.trim()} icon={<Check className="size-3.5" />} />
+          <Button type="submit" size="sm" variant="primary" disabled={!name.trim()} icon={<Check className="size-3.5" />} />
         </form>
       ) : (
         <>
           <Button size="sm" variant="secondary" onClick={() => setNaming(true)} icon={<UserPlus className="size-3.5" />} className="flex-1">
             Nommer
           </Button>
+          {!!p.people.length && (
+            <select
+              defaultValue=""
+              onChange={(e) => {
+                if (e.target.value) setFraming({ kind: "existing", personId: e.target.value });
+                e.target.value = "";
+              }}
+              aria-label={`Rattacher ${p.photo.name} à une personne existante`}
+              className="h-8 max-w-28 shrink-0 rounded-lg bg-bg px-1.5 text-[12px] ring-1 ring-line outline-none"
+            >
+              <option value="" disabled>
+                Rattacher…
+              </option>
+              {p.people.map((person) => (
+                <option key={person.id} value={person.id}>
+                  {person.name}
+                </option>
+              ))}
+            </select>
+          )}
           <button onClick={p.onDelete} aria-label={`Retirer ${p.photo.name}`} className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-danger-soft hover:text-danger">
             <X className="size-3.5" />
           </button>

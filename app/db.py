@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     video_id TEXT NOT NULL,
     face_set_id TEXT NOT NULL,
     params TEXT NOT NULL,            -- JSON RenderOptions
-    status TEXT NOT NULL,            -- queued | running | cancelling | cancelled | done | error
+    status TEXT NOT NULL,            -- queued | running | cancelling | cancelled | done | error | paused | review
     stage TEXT,                      -- cut | swap | assemble
     done INTEGER DEFAULT 0,
     total INTEGER DEFAULT 0,
@@ -189,9 +189,10 @@ def cleanup(retention_hours: float) -> int:
     with connect() as c:
         old_videos = [r["id"] for r in c.execute("SELECT id FROM videos WHERE created_at < ?", (limit,))]
         old_jobs = [r["id"] for r in c.execute(
-            "SELECT id FROM jobs WHERE created_at < ? AND status NOT IN ('queued', 'running', 'pausing', 'paused')", (limit,))]
+            "SELECT id FROM jobs WHERE created_at < ? AND status NOT IN ('queued', 'running', 'pausing', 'paused', 'review')", (limit,))]
         c.execute("DELETE FROM videos WHERE created_at < ?", (limit,))
-        c.execute("DELETE FROM jobs WHERE created_at < ? AND status NOT IN ('queued', 'running', 'pausing', 'paused')", (limit,))
+        c.execute("DELETE FROM jobs WHERE created_at < ? AND status NOT IN ('queued', 'running', 'pausing', 'paused', 'review')", (limit,))
+        kept_sets = {r["face_set_id"] for r in c.execute("SELECT face_set_id FROM jobs")}   # personnes des rendus gardés
     for kind, ids in (("videos", old_videos), ("jobs", old_jobs)):
         for obj_id in ids:
             shutil.rmtree(folder(kind, obj_id), ignore_errors=True)
@@ -199,7 +200,7 @@ def cleanup(retention_hours: float) -> int:
     faces_root = data_dir() / "faces"
     if faces_root.is_dir():
         for d in faces_root.iterdir():
-            if d.is_dir() and d.stat().st_mtime < limit:
+            if d.is_dir() and d.name not in kept_sets and d.stat().st_mtime < limit:
                 shutil.rmtree(d, ignore_errors=True)
                 removed += 1
     return removed

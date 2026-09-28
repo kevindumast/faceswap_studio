@@ -12,7 +12,8 @@ cuda_device_id: 0
 # l'analyse (détection, identité, segmentation) sur l'autre. ×3,5 plus rapide que tout sur la MX450 (2 Go saturés).
 dml_placement: split
 det_size: 640          # taille d'entrée du détecteur pendant le rendu (320 = plus rapide, moins précis)
-det_thresh: 0.4        # confiance minimale d'un visage pendant le rendu (l'identité filtre les faux positifs)
+det_thresh: 0.3        # confiance minimale d'un visage pendant le rendu (l'identité filtre les faux positifs) ;
+                       # comme scan.det_thresh : un visage trouvé à l'étape Visages doit pouvoir être suivi au rendu
 
 # Recherche des personnes d'un passage (étape Visages) : plusieurs images, détection plus tolérante.
 scan:
@@ -39,6 +40,20 @@ models:
   parser: bisenet_resnet_34.onnx          # segmentation du visage (niveau 2 et +)
   parser_urls:
     - https://huggingface.co/facefusion/models-3.0.0/resolve/main/bisenet_resnet_34.onnx
+  restore: codeformer.onnx                # option « netteté » niveaux 1 et 2 : restauration du visage collé (128 px → 512 px)
+  restore_urls:
+    - https://huggingface.co/facefusion/models-3.0.0/resolve/main/codeformer.onnx
+  head:                                   # niveau 3 (dossier models/head) : LivePortrait + LaMa, ~520 Mo
+    feature_extractor: live_portrait_feature_extractor.onnx
+    motion_extractor: live_portrait_motion_extractor.onnx
+    generator: live_portrait_generator.onnx
+    stitcher: live_portrait_stitcher.onnx
+    lama: lama_fp32.onnx                  # fond jamais visible derrière la tête (CPU, une fois par extrait)
+  head_urls:
+    live_portrait:
+      - https://huggingface.co/facefusion/models-3.0.0/resolve/main/{file}
+    lama:
+      - https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx
 
 # Niveaux de transformation. sec_per_frame = estimation CPU avant la première mesure sur ta machine.
 levels:
@@ -51,7 +66,22 @@ levels:
     sec_per_frame_gpu: 0.5
     sec_per_frame_zerogpu: 0.1
     tone_strength_l: 0.5        # part de la luminosité transférée (1 = tout, 0 = garde l'éclairage de la scène)
-    tone_smoothing: 0.7         # EMA des stats de teint entre images (anti-scintillement)
+    tone_samples: 16            # images réparties sur l'extrait pour mesurer le teint de la cible (une fois, avant le rendu)
+    tone_wb_compensation: 0.5   # part de la compensation de la couleur de l'éclairage (photos ↔ vidéo) ; 0 = aucune
+    tone_chroma_scale: 1.0      # 1 = simple décalage de couleur ; > 1 étire les écarts (plaques, gris-bleu dans les ombres)
+    tone_max_shift: 25          # décalage de couleur maximal (unités LAB)
+    tone_smoothing: 0.8         # EMA de la couleur de référence du filtre de peau entre images
+    mask_smoothing: 0.6         # part du masque de peau précédent gardée (déformée selon le mouvement du visage)
+    tone_feather: 0.012         # flou du bord de la zone recolorée (fraction du recadrage)
+  head:                         # niveau 3 : tête entière (LivePortrait) ; le teint suit les réglages de face_tone
+    sec_per_frame: 8.5          # générateur LivePortrait sur le processeur : ≈ 7,7 s par image (i7, 8 cœurs), mesuré
+    sec_per_frame_gpu: 8.5      # idem : même avec une carte, le niveau 3 tourne sur le processeur (device ci-dessous)
+    device: cpu                 # cpu = stable ; gpu = ~3× plus rapide mais le pilote NVIDIA de la MX450 décroche
+                                # (écran noir) tant que TdrDelay (délai de Windows, 2 s) n'a pas été relevé
+    split_gpu_work: true        # device gpu : générateur découpé en petites commandes (moins de risque de décrochage)
+    crop_scale: 1.5             # recadrage autour du visage élargi d'autant (cheveux compris)
+    motion_smoothing: 0.5       # lissage de la pose et de l'expression (LivePortrait tremble un peu sans)
+    plate_samples: 24           # images réparties sur l'extrait pour reconstruire le décor caché par l'ancienne tête
   character:                    # niveau 4 : Wan2.2-Animate-14B sur ton 2e Space ZeroGPU (space_character/)
     max_s: 10                   # durée maximale d'un extrait
     steps: 6                    # étapes de débruitage (qualité ↔ quota : 20 = qualité officielle, ×3 plus cher)
@@ -85,12 +115,31 @@ render:
   crf: 18
   preset: veryfast
   similarity_threshold: 0.28   # similarité cosinus minimale avec le visage cible
-  smoothing: 0.6               # EMA des landmarks (0 = aucun lissage, 0.9 = très lissé)
+  smoothing: 0.6               # EMA des landmarks et de la boîte du visage (0 = aucun lissage, 0.9 = très lissé)
+  swap_color_match: 1.0        # visage généré ramené sur la couleur du visage d'origine (0 = couleur brute d'inswapper)
+  swap_color_smoothing: 0.8    # lissage de cette correction d'une image à l'autre
+  swap_mask_erode: 0.1         # bord du visage collé : marge retirée (fraction du visage aligné)…
+  swap_mask_blur: 0.02         # … et adoucissement (0.02 ≈ recollage d'origine d'insightface ; plus = bord plus doux)
+  restore_device: cpu          # option « netteté » (niveaux 1 et 2) : cpu = stable ; gpu = plus rapide mais cohabite
+                                # avec le swap sur la même carte (risqué sur une carte à mémoire juste, cf. niveau 3)
+  restore_fidelity: 0.5        # 0 = très retouché (plus net, peut s'éloigner un peu du visage d'origine), 1 = fidèle
   preview_every: 8             # frames entre deux aperçus live
   fps_cap: 30                  # option « Limiter à 30 i/s » : cadence max (atteinte en gardant une image sur N)
   duplicate_block_diff: 4.0    # écart max par bloc sous lequel une image est une copie de la précédente (0 = désactivé)
   checkpoint_every_s: 120      # point de reprise enregistré toutes les N s de calcul (arrêt brutal = au plus N s perdues)
   default_sec_per_frame: 2.2   # estimation CPU avant le premier job mesuré (i7 4 cœurs ≈ 2,2 s)
+
+# Vérification avant l'assemblage (option du rendu sur ce PC) : visages perdus en route ou jamais remplacés.
+review:
+  scene_cut: 30          # écart moyen (gris 0-255) au-delà duquel une image peut ouvrir un nouveau plan (mesuré :
+                         # raccords 45-100, mouvements rapides < 30) ; il doit aussi dépasser 2,5× celui des voisines
+  link_gap_s: 0.3        # visage non détecté au plus N s (profil, main devant) : toujours le même visage
+  min_s: 0.2             # visage jamais remplacé visible moins longtemps : ignoré
+  min_face_px: 32        # visage jamais remplacé plus petit (décor, foule) : rangé dans « autres visages »
+  suggest_similarity: 0.15   # ressemblance à partir de laquelle une personne est proposée pour un visage non remplacé
+  interpolate_s: 0.2     # trou de détection comblé par interpolation des points clés au plus sur N s
+  det_thresh: 0.2        # seuil de détection pour retrouver un visage dans un trou, à la position attendue
+  crf: 14                # réencodage de l'extrait corrigé (qualité élevée : il est réencodé à l'assemblage)
 
 proxy:
   max_height: 720
