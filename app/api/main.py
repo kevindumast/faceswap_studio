@@ -68,6 +68,7 @@ def status() -> dict:
         "video_ext": cfg.upload.video_ext,
         "sec_per_frame": routes_models.sec_per_frame(FACE),
         "levels": routes_models.levels_status(routes_jobs.AVAILABLE_LEVELS),
+        "restore": routes_models.restore_status(),
         "gpu": {
             "configured": routes_jobs.gpu_configured(),
             "space": db.get_meta("zerogpu_space") or None,

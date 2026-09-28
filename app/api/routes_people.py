@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -21,7 +22,8 @@ class RenameIn(BaseModel):
 
 
 class ReferenceIn(BaseModel):
-    photo_id: str | None = None   # None : choix automatique (la photo la plus en pied)
+    photo_id: str | None = None   # None : choix automatique (la plus en pied au niveau 4, la plus de face au niveau 3)
+    level: Literal["head", "character"] = "character"
 
 
 class MoveIn(BaseModel):
@@ -154,10 +156,10 @@ def delete_photo(pid: str, photo_id: str) -> dict:
 
 @router.put("/{pid}/reference")
 def set_reference(pid: str, body: ReferenceIn) -> dict:
-    """Choisit la photo utilisée au niveau 4 pour cette personne (gardée pour toutes les vidéos)."""
+    """Choisit la photo utilisée au niveau 4, ou pour la tête au niveau 3 (gardée pour toutes les vidéos)."""
     _load(pid)
     try:
-        return library.set_reference(pid, body.photo_id)
+        return library.set_reference(pid, body.photo_id, body.level)
     except library.PersonNotFound as exc:
         raise not_found("Photo") from exc
 

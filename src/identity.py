@@ -40,13 +40,15 @@ def read_image(path: Path) -> np.ndarray | None:
     return img
 
 
-def _detect_tolerant(frame: np.ndarray) -> list:
+def _detect_tolerant(frame: np.ndarray, thresh: float | None = None) -> list:
     """Détection avec le profil « photo » (comme l'étape Visages) : plus tolérant que le détecteur du rendu,
     figé sur des réglages pensés pour la vitesse vidéo. Une photo importée est unique et précieuse : mieux
     vaut rater plus rarement un visage net que de réutiliser un seuil pensé pour des frames en rafale."""
     cfg = load_config()
     ph = cfg.get("photos", {})
-    size, thresh = int(ph.get("det_size", 960)), float(ph.get("det_thresh", 0.3))
+    size = int(ph.get("det_size", 960))
+    if thresh is None:
+        thresh = float(ph.get("det_thresh", 0.3))
     faces = detect_boxes(frame, size=size, thresh=thresh)
     if faces:
         embed(frame, faces[0])
@@ -74,7 +76,9 @@ def analyze_region(path: Path, box: tuple[float, float, float, float]) -> PhotoR
     """
     from .faces import face_crop
 
-    img = read_image(path)
+    # Pleine résolution (pas read_image, plafonnée à 1600 px) : le but du cadre à la main est justement
+    # de garder un maximum de pixels sur un visage petit ou une capture d'écran déjà peu définie.
+    img = read_image_full(path)
     if img is None:
         return PhotoResult(path, ok=False)
     h, w = img.shape[:2]
@@ -87,7 +91,8 @@ def analyze_region(path: Path, box: tuple[float, float, float, float]) -> PhotoR
     cl, ct = max(0, l - mx), max(0, t - my)
     cr, cb = min(w, r + mx), min(h, b + my)
     region = img[ct:cb, cl:cr]
-    faces = _detect_tolerant(region)
+    # Seuil abaissé : l'utilisateur a déjà pointé la zone, le risque de faux positif est nul ici.
+    faces = _detect_tolerant(region, thresh=0.1)
     if not faces:
         return PhotoResult(path, ok=False)
     face = faces[0]

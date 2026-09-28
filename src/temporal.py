@@ -47,16 +47,22 @@ class TargetTracker:
         return best if iou(best.bbox, self.prev_bbox) > 0.5 else None
 
     def smooth(self, face) -> None:
-        """EMA adaptative : forte au repos, quasi nulle quand la tête bouge vite (pas de retard)."""
+        """EMA adaptative : forte au repos, quasi nulle quand la tête bouge vite (pas de retard).
+
+        La boîte est lissée comme les points clés : le recadrage du teint, son ellipse et la bande du cou en dépendent.
+        """
         kps = np.asarray(face.kps, dtype=np.float32)
+        bbox = np.asarray(face.bbox[:4], dtype=np.float32)
         if self.prev_kps is not None and self.smoothing > 0:
-            size = max(np.sqrt(area(face.bbox)), 1.0)
+            size = max(np.sqrt(area(bbox)), 1.0)
             motion = float(np.mean(np.linalg.norm(kps - self.prev_kps, axis=1))) / size
             alpha = self.smoothing * max(0.0, 1.0 - motion / 0.05)
             kps = alpha * self.prev_kps + (1 - alpha) * kps
+            bbox = alpha * np.asarray(self.prev_bbox[:4], np.float32) + (1 - alpha) * bbox
             face.kps = kps
+            face.bbox = bbox
         self.prev_kps = kps
-        self.prev_bbox = face.bbox
+        self.prev_bbox = bbox
 
     def update(self, faces: list, embed: Callable[[object], None]):
         """Renvoie le visage à swapper pour cette frame (ou None). `embed(face)` calcule l'embedding à la demande."""

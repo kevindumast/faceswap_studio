@@ -52,13 +52,19 @@ export type UrlInfo = {
 export type Photo = { id: string; name: string; crop_url: string; photo_url: string; full_url: string };
 /** Cadrage d'une photo pour le niveau 4 : de la tête aux pieds, mi-corps, portrait, ou visage introuvable. */
 export type Framing = "full" | "half" | "portrait" | "none";
-/** reference : photo retenue pour le niveau 4 (choisie à la main si manual, sinon auto_reference = la plus en pied). */
+/** reference : photo retenue pour le niveau 4 (choisie à la main si manual, sinon auto_reference = la plus en pied).
+ *  head_reference : photo de la tête au niveau 3 (choisie à la main si head_manual, sinon la plus de face et la plus grande). */
 export type PersonFraming = {
   reference: string | null;
   auto_reference: string | null;
   manual: boolean;
-  photos: Record<string, { face_ratio: number | null; framing: Framing }>;
+  head_reference: string | null;
+  auto_head_reference: string | null;
+  head_manual: boolean;
+  photos: Record<string, { face_ratio: number | null; framing: Framing; head_score: number | null }>;
 };
+/** Niveaux qui prennent une photo de référence dans la bibliothèque : tête (3) et personne entière (4). */
+export type ReferenceLevel = "head" | "character";
 /** Personne de la bibliothèque : permanente, réutilisable dans toutes les vidéos. */
 export type Person = { id: string; name: string; count: number; cover_url: string | null; photos: Photo[]; created_at?: number; updated_at?: number };
 export type RejectedPhoto = { id: string; name: string; photo_url: string };
@@ -88,7 +94,17 @@ export type ScanFace = {
   id?: string;
   crop: string;
 };
-export type PassageScan = { start: number; end: number; samples: number; faces: ScanFace[]; frames: Record<string, string>; width: number; height: number };
+/** samples : images analysées ; next_samples : combien avec « Plus d'images » (null : passage déjà analysé assez finement). */
+export type PassageScan = {
+  start: number;
+  end: number;
+  samples: number;
+  next_samples: number | null;
+  faces: ScanFace[];
+  frames: Record<string, string>;
+  width: number;
+  height: number;
+};
 
 export type Target = { t: number; box: Box };
 /** Un visage du clip → une personne source. person = null : visage laissé intact (choix explicite). */
@@ -119,6 +135,11 @@ export type JobParams = {
   use_gpu: boolean;
   resolution?: Resolution;
   limit_fps?: boolean;
+  restore?: boolean;
+  /** Rendu sur ce PC : arrêt avant l'assemblage si des visages sont mal suivis. */
+  review?: boolean;
+  /** Étape de la vérification en cours : recalcul des images corrigées, ou assemblage final. */
+  review_step?: "fix" | "assemble";
 };
 
 /** Niveau 4 : résolution à laquelle la personne est générée sur le Space (puis recollée sur la vidéo). */
@@ -130,7 +151,7 @@ export type Job = {
   video_title: string | null;
   face_set_id: string;
   params: JobParams;
-  status: "queued" | "running" | "cancelling" | "cancelled" | "done" | "error" | "pausing" | "paused";
+  status: "queued" | "running" | "cancelling" | "cancelled" | "done" | "error" | "pausing" | "paused" | "review";
   /** false pour ZeroGPU : le Space calcule tout l'extrait d'un coup. */
   pausable: boolean;
   /** Rendu distant : wake (secondes écoulées / durée typique), queue (rang / taille), gpu, puis étapes du Space. */
@@ -148,8 +169,52 @@ export type Job = {
   result_url: string | null;
   partial_url: string | null; // en pause : ce qui est déjà rendu
   before_url: string | null;
+  /** Rendu terminé qui garde de quoi être revu (journal image par image) : « Revoir les images ». */
+  reviewable: boolean;
   created_at: number;
 };
+
+/**
+ * Vérification avant l'assemblage : un visage suivi d'une image à l'autre dans un même plan (piste) qui pose problème.
+ * lost : remplacé par moments seulement ; mixed : remplacé par deux personnes ; missed : jamais remplacé.
+ * minor : visage jamais remplacé, petit ou sans ressemblance avec une cible (décor, figurants).
+ * bar : [début, fin, état] relatifs à start ; état = id de personne, « none » (non remplacé) ou « gap » (non détecté).
+ */
+export type ReviewIssue = {
+  id: number;
+  /** track : piste choisie d'un clic sur l'image, sans problème signalé (ex. mauvais visage remplacé), côté navigateur. */
+  kind: "lost" | "mixed" | "missed" | "track";
+  minor: boolean;
+  start: number;
+  end: number;
+  frames: number;
+  replaced: Record<string, number>;
+  unreplaced: number;
+  undetected: number;
+  height: number;
+  suggest: string | null;
+  preselect: string | null;
+  thumb: { frame: number; box: Box };
+  bar: [number, number, string][];
+};
+
+/** boxes[image] : [x1, y1, x2, y2 (fractions), piste, association (-1 : non remplacé)] de chaque visage. */
+export type Review = {
+  version: string;
+  fps: number;
+  frames: number;
+  width: number;
+  height: number;
+  mappings: { label: string; person: string | null; active: boolean }[];
+  issues: ReviewIssue[];
+  boxes: [number, number, number, number, number, number][][];
+  pending: number;
+  after_url: string;
+  before_url: string;
+};
+
+/** Choix pour une piste : la remplacer par une personne, retirer tout remplacement, ou la laisser telle quelle. */
+export type ReviewDecision = { issue: number; action: "assign" | "remove" | "keep"; person?: string };
 
 export type Engine = { accelerator: "cpu" | "dml" | "cuda"; label: string; gpus: string[]; error: string | null };
 
@@ -166,6 +231,8 @@ export type Status = {
   video_ext: string[];
   sec_per_frame: number;
   levels: Record<Level, LevelStatus>;
+  /** Option « netteté » (niveaux 1 et 2) : restauration du visage collé (CodeFormer), modèle installé à part. */
+  restore: { ready: boolean; install_mb: number; installing: { running: boolean; progress: number } | null; install_error: string | null };
   gpu: {
     configured: boolean;
     space: string | null;
@@ -287,6 +354,9 @@ export const api = {
 
   scan: (id: string, start: number, end: number) =>
     request<PassageScan>("GET", `/api/videos/${id}/scan?start=${start.toFixed(2)}&end=${end.toFixed(2)}`),
+  /** Analyse une image de plus entre deux déjà analysées (gardé avec la vidéo pour ce passage). */
+  scanMore: (id: string, start: number, end: number) =>
+    request<PassageScan>("POST", `/api/videos/${id}/scan/more`, { start: Number(start.toFixed(2)), end: Number(end.toFixed(2)) }),
   /** Visage d'une zone tracée à la main. face = null : déjà dans la liste, à la place index. */
   addScanFace: (id: string, body: { start: number; end: number; t: number; box: Box }) =>
     request<{ index: number; face: ScanFace | null }>("POST", `/api/videos/${id}/scan/faces`, body),
@@ -318,7 +388,8 @@ export const api = {
   movePhoto: (pid: string, photoId: string, person: string | "new") =>
     request<{ moved_to: string; source_exists: boolean }>("PATCH", `/api/people/${pid}/photos/${photoId}`, { person }),
   framing: (pid: string) => request<PersonFraming>("GET", `/api/people/${pid}/framing`),
-  setReference: (pid: string, photoId: string | null) => request<PersonFraming>("PUT", `/api/people/${pid}/reference`, { photo_id: photoId }),
+  setReference: (pid: string, photoId: string | null, level: ReferenceLevel = "character") =>
+    request<PersonFraming>("PUT", `/api/people/${pid}/reference`, { photo_id: photoId, level }),
   deletePhoto: (pid: string, photoId: string) =>
     request<{ ok: boolean; person_exists: boolean }>("DELETE", `/api/people/${pid}/photos/${photoId}`),
   importToLibrary: (files: File[]) => {
@@ -329,8 +400,8 @@ export const api = {
   },
   pendingPhotos: () => request<PendingPhoto[]>("GET", "/api/people/photos/pending"),
   deletePending: (rid: string) => request<{ ok: boolean }>("DELETE", `/api/people/photos/pending/${rid}`),
-  assignPending: (rid: string, target: string, name?: string) =>
-    request<Person>("POST", `/api/people/photos/pending/${rid}/assign`, { target, name }),
+  assignPending: (rid: string, target: string, box?: Box, name?: string) =>
+    request<Person>("POST", `/api/people/photos/pending/${rid}/assign`, { target, name, ...(box ? { box } : {}) }),
 
   // Moteur : Space ZeroGPU (le jeton et la clé ne reviennent jamais au navigateur)
   settings: () => request<{ zerogpu: ZeroGPUSettings }>("GET", "/api/settings"),
@@ -349,5 +420,10 @@ export const api = {
   cancelJob: (id: string) => request<Job>("POST", `/api/jobs/${id}/cancel`),
   pauseJob: (id: string) => request<Job>("POST", `/api/jobs/${id}/pause`),
   resumeJob: (id: string) => request<Job>("POST", `/api/jobs/${id}/resume`),
+  review: (id: string) => request<Review>("GET", `/api/jobs/${id}/review`),
+  submitReview: (id: string, version: string, decisions: ReviewDecision[]) =>
+    request<Job>("POST", `/api/jobs/${id}/review`, { version, decisions }),
+  assembleJob: (id: string) => request<Job>("POST", `/api/jobs/${id}/assemble`),
+  reopenJob: (id: string) => request<Job>("POST", `/api/jobs/${id}/reopen`),
   deleteJob: (id: string) => request<{ ok: boolean }>("DELETE", `/api/jobs/${id}`),
 };

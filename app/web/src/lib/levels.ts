@@ -10,6 +10,8 @@ export type LevelInfo = {
   experimental?: boolean;
   /** Seul le GPU peut le faire tourner (case GPU obligatoire au rendu). */
   gpuOnly?: boolean;
+  /** Tourne seulement sur ce PC (carte graphique locale) : pas d'option ZeroGPU. */
+  localOnly?: boolean;
 };
 
 export const LEVELS: LevelInfo[] = [
@@ -41,12 +43,14 @@ export const LEVELS: LevelInfo[] = [
     changes: ["Tête entière animée avec ses mouvements et expressions", "Cheveux, forme du crâne, teint"],
     alerts: [
       "Expérimental : raccord visible possible au niveau du cou.",
-      "Cheveux longs ou volumineux, chapeaux, micro devant la bouche : résultat moins propre.",
+      "Il faut une photo de toi de face, en gros plan : la tête vient de cette seule photo (choix à l'étape Visages).",
+      "Casquette, casque, cheveux longs de la personne du clip : effacés au mieux, restes possibles autour de ta tête.",
+      "Décor reconstruit proprement sur un plan fixe ; si la caméra bouge, il est plus approximatif et peut scintiller.",
       "Profils marqués et mouvements rapides plus difficiles.",
-      "Le décor caché par la tête d'origine est reconstruit et peut scintiller.",
-      "Lent sur CPU (≈ 5 s par image).",
+      "Lent : sur le processeur de ce PC (≈ 8 s par image, ≈ 40 min pour 10 s), pas sur ZeroGPU.",
     ],
     experimental: true,
+    localOnly: true,
   },
   {
     id: "character",

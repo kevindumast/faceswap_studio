@@ -135,6 +135,19 @@ def test_session_add_and_remove_person(client, make_session):
     assert client.get(f"/api/people/{ids['Pote']}").status_code == 200    # toujours dans la bibliothèque
 
 
+def test_rendered_session_is_frozen(client, ready_video, make_session):
+    """Les personnes d'un rendu lancé ne bougent plus : modifier la session ensuite part sur une copie."""
+    rng = np.random.default_rng(5)
+    fs, ids = make_session({"Kevin": [rng.normal(size=512)], "Pote": [rng.normal(size=512)]})
+    job = _job(client, ready_video, fs, 1, 7, [{"t": 1.0, "box": [0, 0, 0.2, 0.2], "person": ids["Kevin"]}]).json()
+    client.post(f"/api/jobs/{job['id']}/cancel")
+    edited = client.delete(f"/api/faces/{fs}/people/{ids['Pote']}").json()
+    assert edited["id"] != fs and [p["id"] for p in edited["persons"]] == [ids["Kevin"]]
+    assert {p["id"] for p in client.get(f"/api/faces/{fs}").json()["persons"]} == set(ids.values())
+    again = client.post(f"/api/faces/{edited['id']}/people", json={"person_id": ids["Pote"]}).json()
+    assert again["id"] == edited["id"]                                      # la copie, elle, reste modifiable
+
+
 def test_library_survives_cleanup(make_session):
     from app import db, library
 
@@ -183,7 +196,7 @@ def test_manual_face_added_merged_and_removed(client, sample_video, monkeypatch)
 
     found = [0.1, 0.1, 0.2, 0.3]
     monkeypatch.setattr(routes_videos, "scan_passage",
-                        lambda src, s, e: ([person(2.0, found)], {2.0: np.zeros((360, 640, 3), np.uint8)}))
+                        lambda src, s, e, density=0: ([person(2.0, found)], {2.0: np.zeros((360, 640, 3), np.uint8)}))
     routes_videos._scan_cache.clear()
     base = f"/api/videos/{video}/scan"
     passage = {"start": 1, "end": 7}
@@ -203,4 +216,32 @@ def test_manual_face_added_merged_and_removed(client, sample_video, monkeypatch)
 
     assert client.delete(f"{base}/faces/{added['face']['id']}").json() == {"ok": True}
     assert len(client.get(base, params=passage).json()["faces"]) == 1
+    routes_videos._scan_cache.clear()
+
+
+def test_more_frames_are_remembered_for_the_passage(client, sample_video, monkeypatch):
+    """« Plus d'images » : la densité est gardée avec la vidéo (le rendu revoit la même analyse), jusqu'au maximum."""
+    from app import db
+    from app.api import routes_videos
+    from src import media
+
+    video = db.new_id()
+    db.insert("videos", id=video, kind="upload", title="mire", status="ready", progress=1,
+              source=str(sample_video), info=media.probe(sample_video).to_dict(), created_at=time.time())
+    asked = []
+    monkeypatch.setattr(routes_videos, "scan_passage", lambda src, s, e, density=0: (asked.append(density), ([], {}))[1])
+    routes_videos._scan_cache.clear()
+    base = f"/api/videos/{video}/scan"
+    passage = {"start": 0, "end": 8}
+
+    first = client.get(base, params=passage).json()
+    assert (first["samples"], first["next_samples"]) == (12, 23)
+    more = client.post(f"{base}/more", json=passage).json()
+    assert (more["samples"], more["next_samples"]) == (23, 45)
+    assert client.get(base, params=passage).json()["samples"] == 23                   # gardé, sans nouvelle analyse
+    assert client.get(base, params={"start": 0, "end": 7}).json()["samples"] == 12   # autre passage : inchangé
+    last = client.post(f"{base}/more", json=passage).json()
+    assert (last["samples"], last["next_samples"]) == (45, None)       # 8 s : plus serré, moins de 0,1 s entre deux
+    assert client.post(f"{base}/more", json=passage).status_code == 409
+    assert asked == [0, 1, 0, 2]
     routes_videos._scan_cache.clear()

@@ -13,6 +13,7 @@ const LABEL: Record<Job["status"], string> = {
   cancelling: "Annulation",
   pausing: "Pause…",
   paused: "En pause",
+  review: "À vérifier",
   cancelled: "Annulé",
   done: "Terminé",
   error: "Erreur",
@@ -79,6 +80,7 @@ export function HistoryDrawer({ open, onClose, onOpenJob }: { open: boolean; onC
                             (j.status === "running" || j.status === "queued") && "bg-overlay text-fg",
                             j.status === "error" && "bg-danger-soft text-danger",
                             (j.status === "cancelled" || j.status === "cancelling") && "bg-overlay text-muted",
+                            j.status === "review" && "bg-warn-soft text-warn",
                           )}
                         >
                           {LABEL[j.status]}

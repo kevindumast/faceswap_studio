@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, ArrowRight, Check, Clapperboard, Cpu, Download, Film, Loader2, Pause, Play, RotateCcw, Scissors, Sparkles, Wand2, X, Zap } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Clapperboard, Cpu, Download, Film, Loader2, Pause, Play, RotateCcw, ScanSearch, Scissors, Sparkle, Sparkles, Wand2, X, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ApiError, api, type Job, type JobParams, type Level, type Mapping, type Resolution, type Status, type Video } from "../lib/api";
 import { levelInfo } from "../lib/levels";
@@ -14,6 +14,7 @@ import { ReferenceThumb } from "../components/PersonReference";
 import { parseStage, type StageKey } from "../lib/stages";
 import type { Selection } from "../components/trimmer/Trimmer";
 import { PersonBadge } from "./FacesStep";
+import { ReviewStep } from "./ReviewStep";
 
 type Props = {
   video: Video;
@@ -36,7 +37,7 @@ export function RenderStep(p: Props) {
     queryKey: ["job", p.jobId],
     queryFn: () => api.job(p.jobId!),
     enabled: !!p.jobId,
-    refetchInterval: (q) => (q.state.data && TERMINAL.includes(q.state.data.status) ? false : q.state.data?.status === "paused" ? 3000 : 1000),
+    refetchInterval: (q) => (q.state.data && TERMINAL.includes(q.state.data.status) ? false : ["paused", "review"].includes(q.state.data?.status ?? "") ? 3000 : 1000),
     // Rendu supprimé (404) : on arrête tout de suite. API qui redémarre : on réessaie sans rien afficher.
     retry: (count, err) => !(err instanceof ApiError && err.status === 404) && count < 10,
     retryDelay: 1000,
@@ -76,6 +77,7 @@ export function RenderStep(p: Props) {
     );
   }
   if (j.status === "paused") return <PausedView job={j} video={p.video} />;
+  if (j.status === "review") return <ReviewStep job={j} />;
   return <Running job={j} video={p.video} worker={p.status?.worker ?? true} />;
 }
 
@@ -86,7 +88,17 @@ function Setup(p: Props) {
   const [aiLabel, setAiLabel] = useState(true);
   // Jamais coché d'office ni mémorisé : le GPU ne consomme du quota que si on le demande pour CE rendu.
   const [useGpu, setUseGpu] = useState(false);
+  // Idem : coûte du temps de calcul en plus (CodeFormer), jamais activé d'office.
+  const [restore, setRestore] = useState(false);
+  // Arrêt avant l'assemblage si des visages sont mal suivis (rendu sur ce PC seulement : il faut le journal image par image).
+  const [review, setReview] = useState(true);
   const info = levelInfo(p.level);
+  const isFaceLevel = p.level === "face" || p.level === "face_tone";
+  const restoreStatus = p.status?.restore;
+  const install = useMutation({
+    mutationFn: () => api.installModels("restore"),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["status"] }),
+  });
   const fps = p.video.info!.fps;
   const cap = p.status?.fps_cap ?? 30;
   const highFps = fps > cap + 0.5;
@@ -109,6 +121,7 @@ function Setup(p: Props) {
   const people = Math.max(1, active.length);
   const badCount = isCharacter && active.length > maxPeople;
   const gpuConfigured = isCharacter ? !!character?.configured : !!p.status?.gpu.configured;
+  const canReview = !isCharacter && !useGpu;
   const blockedByGpu = !!info.gpuOnly && !useGpu;
   // Mode « vidéo complète » : le reste du clip est seulement réencodé (≈ 4× plus vite que le temps réel).
   const fullExtra = p.video.info!.duration * 0.25;
@@ -145,6 +158,8 @@ function Setup(p: Props) {
         level: p.level,
         use_gpu: useGpu,
         ...(isCharacter ? { resolution } : {}),
+        ...(isFaceLevel ? { restore } : {}),
+        review: canReview && review,
         limit_fps: highFps && limitFps,
         consent: p.consent,
       }),
@@ -248,7 +263,66 @@ function Setup(p: Props) {
             {!aiLabel && info.step >= 2 && (
               <Notice tone="warn">Plus le rendu est réaliste, plus l'étiquette compte : sans elle, la vidéo peut passer pour vraie une fois partagée.</Notice>
             )}
+            {!isCharacter && (
+              <Switch
+                checked={canReview && review}
+                onChange={setReview}
+                disabled={!canReview}
+                label="Vérifier les images avant l'assemblage"
+                description={
+                  canReview
+                    ? "Si un visage est perdu en route ou pas reconnu, le rendu s'arrête avant d'ajouter le son : tu choisis quoi corriger, seules ces images sont recalculées."
+                    : "Pas encore avec l'option GPU (ZeroGPU) : le détail image par image reste sur le Space."
+                }
+              />
+            )}
           </div>
+          {isFaceLevel && (
+            <div className="mt-4 border-t border-line pt-4">
+              {restoreStatus?.ready ? (
+                <Switch
+                  checked={restore}
+                  onChange={setRestore}
+                  disabled={useGpu}
+                  label="Netteté du visage"
+                  description={
+                    useGpu
+                      ? "Pas encore disponible avec l'option GPU (ZeroGPU)."
+                      : "Le visage généré (128 px) est ré-agrandi et un peu flou : cette option le retouche avant de le recoller. Plus lent (~2× le temps de ce niveau)."
+                  }
+                />
+              ) : (
+                <div>
+                  <div className="mb-1 flex items-center gap-1.5 text-[13px] font-medium">
+                    <Sparkle className="size-3.5 text-faint" /> Netteté du visage
+                  </div>
+                  {restoreStatus?.installing ? (
+                    <div>
+                      <div className="mb-1.5 flex justify-between text-[13px] text-muted">
+                        <span>Installation du modèle…</span>
+                        <span className="font-mono tabular">{Math.round(restoreStatus.installing.progress * 100)} %</span>
+                      </div>
+                      <ProgressBar value={restoreStatus.installing.progress} />
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-raised p-3 ring-1 ring-line">
+                      <span className="text-[13px] text-muted">
+                        Retouche le visage généré, plus net qu'avec l'agrandissement brut ({restoreStatus?.install_mb ?? 360} Mo, une seule fois).
+                      </span>
+                      <Button variant="secondary" size="sm" icon={<Download className="size-3.5" />} loading={install.isPending} onClick={() => install.mutate()}>
+                        Installer
+                      </Button>
+                    </div>
+                  )}
+                  {restoreStatus?.install_error && (
+                    <Notice tone="danger" className="mt-2">
+                      {restoreStatus.install_error}
+                    </Notice>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           {isCharacter && (
             <div className="mt-4 border-t border-line pt-4">
               <div className="mb-1 text-[13px] font-medium">Qualité de la personne générée</div>
@@ -283,15 +357,22 @@ function Setup(p: Props) {
               )}
             </div>
           )}
-          <GpuOption
-            checked={useGpu}
-            onChange={setUseGpu}
-            configured={gpuConfigured}
-            required={!!info.gpuOnly}
-            quotaNeeded={gpuSeconds}
-            quotaLeft={quotaLeft}
-            spaceLabel={isCharacter ? "le Space du niveau 4" : undefined}
-          />
+          {info.localOnly ? (
+            <Notice tone="info" className="mt-4">
+              Ce niveau tourne sur le processeur de ce PC (pas sur ZeroGPU) : compte environ 8 s par image. Le décor caché par
+              l'ancienne tête est reconstruit avant le rendu (~30 s de préparation).
+            </Notice>
+          ) : (
+            <GpuOption
+              checked={useGpu}
+              onChange={setUseGpu}
+              configured={gpuConfigured}
+              required={!!info.gpuOnly}
+              quotaNeeded={gpuSeconds}
+              quotaLeft={quotaLeft}
+              spaceLabel={isCharacter ? "le Space du niveau 4" : undefined}
+            />
+          )}
           <div className="mt-auto pt-6">
             {p.status && !p.status.worker && (
               <Notice tone="warn" className="mb-4">
@@ -451,7 +532,11 @@ const CHARACTER_STAGES: Stage[] = [
   { key: "assemble", label: "Recollage + son" },
 ];
 
+const FIX_STAGES: Stage[] = [{ key: "fix", label: "Recalcul des images corrigées" }];
+const REVIEWED_STAGES: Stage[] = [{ key: "assemble", label: "Assemblage + son" }];
+
 function stagesOf(j: Job): Stage[] {
+  if (j.params.review_step) return j.params.review_step === "fix" ? FIX_STAGES : REVIEWED_STAGES;
   if (j.params.level === "character") return CHARACTER_STAGES;
   return j.params.use_gpu ? REMOTE_STAGES : STAGES;
 }
@@ -472,6 +557,8 @@ function overall(j: Job): number {
       return pass > 1 ? 0.07 + 0.88 * before : 0.06;
     case "swap":
       return j.params.use_gpu ? 0.07 + 0.88 * frac : 0.05 + 0.9 * frac;
+    case "fix":
+      return 0.02 + 0.97 * frac;
     case "pose":
     case "mask":
     case "generate":
@@ -505,6 +592,7 @@ function stageDetail(j: Job, inStage: number): string | null {
     case "gpu":
       return chrono(inStage);
     case "swap":
+    case "fix":
       return `${j.done}/${j.total}`;
     case "pose":
     case "mask":
@@ -613,7 +701,8 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
   const queued = job.status === "queued";
   const remote = job.params.use_gpu;
   // Aperçu en direct seulement pour un rendu sur ce PC (le Space ne renvoie que le résultat final).
-  const hasPreview = !remote && (stageKey === "swap" || stageKey === "assemble");
+  const reviewStep = job.params.review_step;
+  const hasPreview = !remote && !reviewStep && (stageKey === "swap" || stageKey === "assemble");
   const inStage = useStageClock(job.stage);
   const info = video.info!;
 
@@ -628,7 +717,11 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
               ? "Annulation…"
               : job.status === "pausing"
                 ? "Mise en pause…"
-                : `Rendu en cours${passLabel ? ` · ${passLabel}` : ""}`
+                : reviewStep === "fix"
+                  ? "Corrections en cours"
+                  : reviewStep === "assemble"
+                    ? "Assemblage"
+                    : `Rendu en cours${passLabel ? ` · ${passLabel}` : ""}`
         }
         subtitle={
           queued && !worker
@@ -652,8 +745,16 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
                 Pause
               </Button>
             )}
-            <Button variant="danger" size="md" icon={<X className="size-4" />} onClick={() => cancel.mutate()} loading={cancel.isPending} disabled={job.status === "cancelling"}>
-              Annuler
+            <Button
+              variant="danger"
+              size="md"
+              icon={<X className="size-4" />}
+              onClick={() => cancel.mutate()}
+              loading={cancel.isPending}
+              disabled={job.status === "cancelling"}
+              title={reviewStep ? "Revenir à la vérification (rien n'est perdu)" : undefined}
+            >
+              {reviewStep ? "Revenir à la vérification" : "Annuler"}
             </Button>
           </div>
         }
@@ -721,9 +822,16 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
               <div className="font-mono tabular">{job.elapsed ? duration(job.elapsed) : "—"}</div>
             </div>
             <div>
-              <div className="text-faint">{remote ? "Moteur" : "Vitesse"}</div>
+              {/* Corrections : toutes les images sont relues, seules les corrigées sont calculées (vitesse sans intérêt). */}
+              <div className="text-faint">{remote ? "Moteur" : reviewStep ? "Images relues" : "Vitesse"}</div>
               <div className="font-mono tabular">
-                {remote ? "ZeroGPU" : job.elapsed && job.done ? `${(job.elapsed / job.done).toFixed(1).replace(".", ",")} s/img` : "—"}
+                {remote
+                  ? "ZeroGPU"
+                  : reviewStep
+                    ? `${job.done}/${job.total}`
+                    : job.elapsed && job.done
+                      ? `${(job.elapsed / job.done).toFixed(1).replace(".", ",")} s/img`
+                      : "—"}
               </div>
             </div>
           </div>
@@ -735,7 +843,15 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
 
 function Done({ job, video, onJob, onEditSegment, onNewVideo }: { job: Job } & Props) {
   const info = video.info!;
+  const qc = useQueryClient();
   const [showConfetti] = useState(() => Date.now() / 1000 - job.created_at < 3600);
+  const reopen = useMutation({
+    mutationFn: () => api.reopenJob(job.id),
+    onSuccess: (j) => {
+      qc.setQueryData(["job", j.id], j);
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+    },
+  });
   return (
     <div>
       <SectionTitle
@@ -777,7 +893,13 @@ function Done({ job, video, onJob, onEditSegment, onNewVideo }: { job: Job } & P
               </Notice>
             ))}
           </AnimatePresence>
+          {reopen.error && <Notice tone="danger">{reopen.error.message}</Notice>}
           <div className="grid gap-2">
+            {job.reviewable && (
+              <Button variant="secondary" icon={<ScanSearch className="size-4" />} loading={reopen.isPending} onClick={() => reopen.mutate()} title="Voir image par image les visages mal suivis et les corriger, puis réassembler">
+                Revoir les images
+              </Button>
+            )}
             <Button variant="secondary" icon={<Scissors className="size-4" />} onClick={onEditSegment}>
               Autre passage, même vidéo
             </Button>

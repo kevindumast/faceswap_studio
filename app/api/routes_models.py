@@ -16,7 +16,7 @@ from .common import background
 router = APIRouter(prefix="/api/models", tags=["models"])
 
 # Taille approximative à télécharger par groupe (affichée sur le bouton « Installer »).
-GROUP_MB = {"base": 850, "tone": 94}
+GROUP_MB = {"base": 850, "tone": 94, "head": 540, "restore": 360}
 
 
 def _download_state(group: str) -> dict | None:
@@ -72,6 +72,17 @@ def levels_status(available: tuple[str, ...]) -> dict:
             "sec_per_frame": sec_per_frame(level, engine),
         }
     return out
+
+
+def restore_status() -> dict:
+    """Option « netteté » (niveaux 1 et 2) : modèle à part, pas lié à un niveau (même écran d'installation)."""
+    download = _download_state("restore")
+    return {
+        "ready": models.is_ready("restore"),
+        "install_mb": GROUP_MB["restore"],
+        "installing": download if download and download.get("running") else None,
+        "install_error": download["error"] if download and download.get("error") else None,
+    }
 
 
 def _run_download(group: str) -> None:
