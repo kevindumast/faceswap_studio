@@ -2,9 +2,17 @@ import { Loader2, Maximize2, Minimize2, Pause, Play, Volume2, VolumeX } from "lu
 import { useCallback, useEffect, useRef, useState } from "react";
 import { clamp, timecode } from "../lib/time";
 import { Button } from "./ui";
+import { fitToScreen } from "../lib/fit";
 
 /** Lecteur avant / après : deux vidéos synchronisées, un rideau déplaçable. */
-export function Compare({ before, after, aspect, fps, autoPlay = false }: { before: string; after: string; aspect: string; fps: number; autoPlay?: boolean }) {
+export function Compare({ before, after, width, height, fps, autoPlay = false }: {
+  before: string;
+  after: string;
+  width: number;
+  height: number;
+  fps: number;
+  autoPlay?: boolean;
+}) {
   const box = useRef<HTMLDivElement>(null);
   const wrapper = useRef<HTMLDivElement>(null);
   const [fullscreen, setFullscreen] = useState(false);
@@ -75,7 +83,7 @@ export function Compare({ before, after, aspect, fps, autoPlay = false }: { befo
       <div
         ref={box}
         className="relative touch-none overflow-hidden rounded-[var(--radius-card)] bg-black ring-1 ring-line select-none"
-        style={fullscreen ? { flex: 1, minHeight: 0 } : { aspectRatio: aspect }}
+        style={fullscreen ? { flex: 1, minHeight: 0 } : fitToScreen(width, height, 300)}
         onDoubleClick={toggleFullscreen}
         onPointerDown={(e) => {
           dragging.current = true;

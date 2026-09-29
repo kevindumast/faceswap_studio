@@ -5,7 +5,9 @@ ni du CPU vers le GPU, ni l'inverse en cas d'échec (l'utilisateur relance lui-m
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
+import re
 import shutil
 import tempfile
 import time
@@ -154,12 +156,21 @@ def wait_until_ready(kind: str, on_wait: Callable[[float, float], None],
 
 def friendly(exc: Exception) -> str:
     """Messages compréhensibles pour les erreurs les plus fréquentes."""
-    msg = str(exc)
+    if isinstance(exc, concurrent.futures.CancelledError):   # gradio_client : flux de suivi fermé avant la fin
+        return ("Connexion avec le Space coupée pendant le calcul : le Space a abandonné le rendu. Le proxy du réseau "
+                "d'entreprise retient les réponses en flux de *.hf.space puis les coupe (~3 min) ; depuis un autre "
+                "réseau (partage de connexion), le rendu passe.")
+    msg = str(exc) or type(exc).__name__   # certaines erreurs réseau (httpx.ReadError…) n'ont pas de texte
     low = msg.lower()
     if "handshake failure" in low or "read operation timed out" in low or "certificate verify failed" in low:
         return ("Connexion au Space refusée par le réseau (filtre du réseau d'entreprise sur *.hf.space ?). "
                 "Hugging Face voit le Space prêt, mais ce PC ne peut pas l'atteindre : fais autoriser *.hf.space "
                 "par ton service informatique, ou utilise l'appli depuis un autre réseau.")
+    if "larger than the maximum allowed" in low:   # refus avant calcul : réservation trop longue pour le compte
+        asked = re.search(r"duration \((\d+)s\)", msg)
+        return (f"ZeroGPU refuse de réserver {asked.group(1) + ' s' if asked else 'autant'} de GPU d'un coup : c'est plus "
+                "que le maximum autorisé pour ton compte (gratuit). Rien n'a été décompté du quota. Passe en 360p ou "
+                "raccourcis le passage (en PRO : tâches jusqu'à 40 min).")
     if "quota" in low:
         return "Quota ZeroGPU épuisé pour aujourd'hui (5 min/jour en gratuit, 40 en PRO). Relance sur ce PC ou réessaie demain."
     if "app_key" in low:
@@ -169,7 +180,7 @@ def friendly(exc: Exception) -> str:
     if "sleep" in low or "building" in low or "starting" in low or "runtime_error" in low:
         return ("Le Space démarre ou s'est mis en veille : attends 1 à 2 min puis relance le rendu "
                 "(jusqu'à 30 min au premier démarrage du Space niveau 4, le temps de charger le modèle).")
-    if "gpu task aborted" in low or "duration" in low:
+    if "gpu task aborted" in low:
         return "Le GPU a été coupé avant la fin (durée maximale dépassée) : essaie un passage plus court."
     return f"Erreur du Space GPU : {msg[:300]}"
 

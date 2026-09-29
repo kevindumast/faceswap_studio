@@ -227,6 +227,8 @@ export type Status = {
   segment: { min_s: number; max_s: number };
   photos_max: number;
   fps_cap: number;
+  /** Qualité max du rendu, en « p » (petit côté) : au-delà, la vidéo est réduite avant le swap. */
+  render_max_res: number;
   upload_max_mb: number;
   video_ext: string[];
   sec_per_frame: number;

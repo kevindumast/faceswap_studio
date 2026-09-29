@@ -50,6 +50,7 @@ import { PhotoViewer } from "../components/PhotoViewer";
 import { ReferenceBadge, referenceOf, useChooseReference, useFraming } from "../components/PersonReference";
 import { Button, Card, Menu, MenuItem, Notice, SectionTitle, cx } from "../components/ui";
 import type { Selection } from "../components/trimmer/Trimmer";
+import { fitToScreen } from "../lib/fit";
 
 type Props = {
   video: Video;
@@ -716,7 +717,7 @@ function TargetPanel({
         )}
       </div>
 
-      <div className="relative overflow-hidden rounded-xl bg-black ring-1 ring-line" style={{ aspectRatio: `${video.info!.width} / ${video.info!.height}` }}>
+      <div className="relative overflow-hidden rounded-xl bg-black ring-1 ring-line" style={fitToScreen(video.info!.width, video.info!.height, 330)}>
         {scan && frameT !== undefined && <PassageFrame scan={scan} frameT={frameT} persons={persons} personOf={personOf} onPick={(i) => (setFocus(i), setOpenMenu(i))} />}
         {selecting && scan && frameT !== undefined && (
           <RegionPicker aspect={video.info!.width / video.info!.height} busy={addFace.isPending} onPick={(box) => addFace.mutate({ t: frameT, box })} />

@@ -27,6 +27,20 @@ def gpu_names() -> tuple[str, ...]:
     return tuple(n for n in names if not any(v in n.lower() for v in _VIRTUAL))
 
 
+def _directml_overwritten() -> bool:
+    """onnxruntime-directml installé mais sans DirectML : les deux paquets fournissent le même module, et une
+    réinstallation d'onnxruntime (CPU) a remplacé ses fichiers."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    import onnxruntime
+
+    try:
+        version("onnxruntime-directml")
+    except PackageNotFoundError:
+        return False
+    return "DmlExecutionProvider" not in onnxruntime.get_available_providers()
+
+
 def short_name(name: str) -> str:
     """« NVIDIA GeForce MX450 » → « MX450 », « Intel(R) Iris(R) Xe Graphics » → « Iris Xe »."""
     clean = name.replace("(R)", "").replace("(TM)", "").replace("NVIDIA", "").replace("GeForce", "")
@@ -41,5 +55,8 @@ def engine_status() -> dict:
         error = None
     except DeviceUnavailable as exc:
         acc, error = "cpu", str(exc)
+    if acc == "cpu" and error is None and _directml_overwritten():
+        error = ("La version carte graphique d'onnxruntime a été écrasée par la version CPU (réinstallation des "
+                 "dépendances, « uv run »…). Arrête l'API et le worker, puis lance scripts\\activer_gpu.ps1.")
     gpus = [short_name(n) for n in gpu_names()] if acc != "cpu" else []
     return {"accelerator": acc, "label": LABELS[acc], "gpus": gpus, "error": error}

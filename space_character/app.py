@@ -195,6 +195,9 @@ if not DRY_RUN:
     MASKER = ProcessPipeline.__new__(ProcessPipeline)   # seulement pour sa méthode get_mask (SAM2 guidé par le squelette)
     MASKER.predictor = build_sam2_video_predictor("sam2_hiera_l.yaml",
                                                   str(CKPT / "process_checkpoint/sam2/sam2_hiera_large.pt"))
+    # Wan règle fill_hole_area=8 : bouchage des petits trous du masque par l'extension CUDA de SAM2 (sam2._C), non
+    # compilée ici (ImportError). Les versions récentes de SAM2 sautent cette étape quand l'extension manque : pareil.
+    MASKER.predictor.fill_hole_area = 0
 print("Prêt.", flush=True)
 
 

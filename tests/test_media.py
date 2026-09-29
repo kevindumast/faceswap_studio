@@ -35,6 +35,18 @@ def test_proxy_and_filmstrip(sample_video, tmp_path):
 def test_extract_frame(sample_video):
     frame = media.extract_frame(sample_video, 3.0)
     assert frame.shape == (360, 640, 3)
+    assert media.extract_frame(sample_video, 3.0, 240).shape == (240, 426, 3)  # comme scaled_size
+
+
+@pytest.mark.parametrize("size, max_res, expected", [
+    ((1920, 1080), 720, (1280, 720)),
+    ((1080, 1920), 720, (720, 1280)),    # vertical : 720p = 720 de large, pas 720 de haut
+    ((1080, 1920), 1080, (1080, 1920)),
+    ((360, 640), 1080, (360, 640)),
+])
+def test_scaled_size_uses_short_side(size, max_res, expected):
+    info = media.VideoInfo(10, *size, 25, "25/1", True, "h264")
+    assert media.scaled_size(info, max_res) == expected
 
 
 @pytest.mark.parametrize("url, expected", [

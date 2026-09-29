@@ -108,10 +108,10 @@ photos:
 youtube:
   example_url: https://www.youtube.com/watch?v=x9yop0nYR9g   # proposé comme exemple dans l'UI
   max_duration_s: 900
-  max_height: 720
+  max_height: 720              # qualité importée, en « p » (petit côté : un Short 720p fait 720×1280) ; 1080 = max du rendu
 
 render:
-  max_height: 1080             # au-delà, la vidéo est réduite avant le swap (CPU)
+  max_height: 1080             # au-delà (petit côté, en « p »), la vidéo est réduite avant le swap (CPU)
   crf: 18
   preset: veryfast
   similarity_threshold: 0.28   # similarité cosinus minimale avec le visage cible
@@ -142,7 +142,7 @@ review:
   crf: 14                # réencodage de l'extrait corrigé (qualité élevée : il est réencodé à l'assemblage)
 
 proxy:
-  max_height: 720
+  max_height: 720              # aperçu du navigateur (petit côté)
   filmstrip_count: 60
   filmstrip_height: 90
 

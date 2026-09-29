@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, type Status, type UrlInfo, type Video } from "../lib/api";
 import { duration } from "../lib/time";
 import { Button, Card, Notice, ProgressBar, SectionTitle, SegmentedControl, cx } from "../components/ui";
+import { QualityBadge } from "../components/QualityBadge";
 
 type Props = { status?: Status; onReady: (v: Video) => void };
 
@@ -312,6 +313,7 @@ function RecentVideos({ onPick }: { onPick: (v: Video) => void }) {
                 <span className="absolute right-2 bottom-2 rounded-md bg-black/75 px-1.5 py-0.5 font-mono text-[11px] tabular">
                   {duration(v.info?.duration ?? 0)}
                 </span>
+                {v.info && <QualityBadge info={v.info} compact className="absolute bottom-2 left-2" />}
               </div>
               <div className="truncate px-3 py-2.5 text-[13px]">{v.title}</div>
             </button>

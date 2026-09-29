@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { ApiError, api, type Job, type JobParams, type Level, type Mapping, type Resolution, type Status, type Video } from "../lib/api";
 import { levelInfo } from "../lib/levels";
 import { faceIndex, styleOf } from "../lib/people";
-import { cappedFps, duration, seconds, timecode } from "../lib/time";
+import { cappedFps, duration, renderSpeed, seconds, timecode } from "../lib/time";
 import { Button, Card, Notice, ProgressBar, SectionTitle, SegmentedControl, Switch, cx } from "../components/ui";
 import { Compare } from "../components/Compare";
 import { openEngineSettings } from "../components/EngineSettings";
@@ -15,6 +15,7 @@ import { parseStage, type StageKey } from "../lib/stages";
 import type { Selection } from "../components/trimmer/Trimmer";
 import { PersonBadge } from "./FacesStep";
 import { ReviewStep } from "./ReviewStep";
+import { fitToScreen } from "../lib/fit";
 
 type Props = {
   video: Video;
@@ -130,7 +131,12 @@ function Setup(p: Props) {
   const characterPerS = character?.gpu_s_per_second[resolution] ?? (resolution === "480p" ? 26 : 12);
   const characterSteps = character?.steps ?? 6;
   // Niveau 4 : un passage GPU par personne remplacée, l'un après l'autre.
-  const gpuSeconds = isCharacter ? characterGpuSeconds(len, characterPerS, characterSteps) * people : frames * gpuSpf * swapFactor;
+  const characterPass = characterGpuSeconds(len, characterPerS, characterSteps);
+  const gpuSeconds = isCharacter ? characterPass * people : frames * gpuSpf * swapFactor;
+  // Le Space du niveau 4 réserve 30 % de plus que l'estimation (marge), et ZeroGPU multiplie encore par 1,5 (cartes
+  // Blackwell : 227 s demandés → 340 s refusés) : il refuse d'emblée une réservation plus grande que le quota restant.
+  // Les passages s'enchaînent : seule la réservation du dernier compte en plus.
+  const gpuReserved = isCharacter ? gpuSeconds + characterPass * (1.3 * 1.5 - 1) : gpuSeconds;
   const quotaLeft = (p.status?.gpu.free_quota_s ?? 300) - (p.status?.gpu.used_today_s ?? 0);
   const estimate = useGpu
     ? gpuSeconds + (isCharacter ? 90 : 60) + (output === "full" ? fullExtra : 0)
@@ -369,6 +375,7 @@ function Setup(p: Props) {
               configured={gpuConfigured}
               required={!!info.gpuOnly}
               quotaNeeded={gpuSeconds}
+              quotaReserved={gpuReserved}
               quotaLeft={quotaLeft}
               spaceLabel={isCharacter ? "le Space du niveau 4" : undefined}
             />
@@ -437,6 +444,7 @@ function GpuOption({
   configured,
   required,
   quotaNeeded,
+  quotaReserved,
   quotaLeft,
   spaceLabel,
 }: {
@@ -445,6 +453,8 @@ function GpuOption({
   configured: boolean;
   required: boolean;
   quotaNeeded: number;
+  /** Temps réservé auprès de ZeroGPU (estimation + marge du Space) : c'est lui qui doit tenir dans le quota restant. */
+  quotaReserved: number;
   quotaLeft: number;
   /** Space concerné, s'il n'est pas celui des niveaux 1-2 (ex. « le Space du niveau 4 »). */
   spaceLabel?: string;
@@ -483,9 +493,10 @@ function GpuOption({
           )}
         </span>
       </label>
-      {configured && checked && quotaNeeded > quotaLeft && (
+      {configured && checked && quotaReserved > quotaLeft && (
         <Notice tone="warn" className="mt-3">
-          Ce rendu demande plus que le quota restant aujourd'hui : il risque d'être coupé. Raccourcis le passage ou décoche l'option.
+          Ce rendu réserve ≈ {duration(quotaReserved)} de GPU, plus que le quota restant aujourd'hui : ZeroGPU le refusera au lancement.{" "}
+          {required ? "Raccourcis le passage ou passe en 360p." : "Raccourcis le passage ou décoche l'option."}
         </Notice>
       )}
       {required && !checked && (
@@ -646,9 +657,9 @@ function PausedView({ job, video }: { job: Job; video: Video }) {
       )}
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
         {watching && canWatch ? (
-          <Compare key={job.partial_url} before={job.before_url!} after={job.partial_url!} aspect={`${info.width} / ${info.height}`} fps={info.fps} autoPlay />
+          <Compare key={job.partial_url} before={job.before_url!} after={job.partial_url!} width={info.width} height={info.height} fps={info.fps} autoPlay />
         ) : (
-          <div className="relative overflow-hidden rounded-[var(--radius-card)] bg-black ring-1 ring-line" style={{ aspectRatio: `${info.width} / ${info.height}` }}>
+          <div className="relative overflow-hidden rounded-[var(--radius-card)] bg-black ring-1 ring-line" style={fitToScreen(info.width, info.height)}>
             {job.done > 0 && <img src={`${job.preview_url}?v=${job.done}`} alt="Dernière image calculée" className="absolute inset-0 size-full object-contain opacity-70" />}
             <span className="absolute top-3 left-3 flex items-center gap-1.5 rounded-full bg-black/60 px-2.5 py-1 text-[11px] backdrop-blur-md">
               <Pause className="size-3 fill-current" /> Dernière image calculée
@@ -760,7 +771,7 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
         }
       />
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
-        <div className="relative overflow-hidden rounded-[var(--radius-card)] bg-black ring-1 ring-line" style={{ aspectRatio: `${info.width} / ${info.height}` }}>
+        <div className="relative overflow-hidden rounded-[var(--radius-card)] bg-black ring-1 ring-line" style={fitToScreen(info.width, info.height)}>
           {hasPreview && <img src={`${job.preview_url}?v=${job.done}`} alt="Dernière image calculée" className="absolute inset-0 size-full object-contain" />}
           {!hasPreview && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center text-muted">
@@ -830,7 +841,7 @@ function Running({ job, video, worker }: { job: Job; video: Video; worker: boole
                   : reviewStep
                     ? `${job.done}/${job.total}`
                     : job.elapsed && job.done
-                      ? `${(job.elapsed / job.done).toFixed(1).replace(".", ",")} s/img`
+                      ? renderSpeed(job.elapsed / job.done)
                       : "—"}
               </div>
             </div>
@@ -876,13 +887,13 @@ function Done({ job, video, onJob, onEditSegment, onNewVideo }: { job: Job } & P
         }
       />
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
-        <Compare before={job.before_url!} after={job.result_url!} aspect={`${info.width} / ${info.height}`} fps={info.fps} />
+        <Compare before={job.before_url!} after={job.result_url!} width={info.width} height={info.height} fps={info.fps} />
         <div className="flex flex-col gap-4">
           <Card className="p-5">
             <dl className="grid grid-cols-2 gap-4 text-[13px]">
               <Stat label="Images traitées" value={`${job.total}`} />
               <Stat label="Temps total" value={job.elapsed ? duration(job.elapsed) : "—"} />
-              <Stat label="Vitesse" value={job.sec_per_frame ? `${job.sec_per_frame.toFixed(2).replace(".", ",")} s/img` : "—"} />
+              <Stat label="Vitesse" value={job.sec_per_frame ? renderSpeed(job.sec_per_frame, 2) : "—"} />
               <Stat label="Sortie" value={job.params.output === "full" ? "Vidéo complète" : "Extrait seul"} />
             </dl>
           </Card>

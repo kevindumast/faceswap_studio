@@ -2,6 +2,7 @@ import { ArrowRight, Cpu } from "lucide-react";
 import type { Status, Video } from "../lib/api";
 import { cappedFps, duration } from "../lib/time";
 import { Button, SectionTitle } from "../components/ui";
+import { QualityBadge } from "../components/QualityBadge";
 import { Trimmer, type Selection } from "../components/trimmer/Trimmer";
 
 type Props = {
@@ -40,7 +41,14 @@ export function SegmentStep({ video, status, selection, onChange, onNext }: Prop
           </div>
         }
       />
-      <Trimmer video={video} selection={selection} onChange={onChange} min={min} max={max} />
+      <Trimmer
+        video={video}
+        selection={selection}
+        onChange={onChange}
+        min={min}
+        max={max}
+        badge={<QualityBadge info={video.info!} maxRes={status?.render_max_res ?? 1080} />}
+      />
     </div>
   );
 }

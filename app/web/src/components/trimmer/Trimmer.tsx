@@ -12,7 +12,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { Video } from "../../lib/api";
 import { clamp, timecode } from "../../lib/time";
 import { Button, Kbd, cx } from "../ui";
@@ -27,11 +27,13 @@ type Props = {
   onChange: (s: Selection) => void;
   min: number;
   max: number;
+  /** Affiché en haut à droite du lecteur (ex. qualité de la vidéo). */
+  badge?: ReactNode;
 };
 
 const PRESETS = [5, 10, 15, 30, 60];
 
-export function Trimmer({ video, selection, onChange, min, max }: Props) {
+export function Trimmer({ video, selection, onChange, min, max, badge }: Props) {
   const info = video.info!;
   const fps = info.fps;
   const dur = info.duration;
@@ -267,6 +269,7 @@ export function Trimmer({ video, selection, onChange, min, max }: Props) {
             {inside ? "Dans le passage" : "Hors passage"}
           </span>
         </div>
+        {badge && <div className="absolute top-3 right-3">{badge}</div>}
         <AnimatePresence>
           {!playing && (
             <motion.button

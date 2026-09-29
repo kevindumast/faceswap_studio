@@ -42,3 +42,10 @@ export function cappedFps(fps: number, cap: number): number {
 export function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
 }
+
+/** Vitesse de rendu dans les deux sens : « 0,7 s/img · 1,4 img/s ». */
+export function renderSpeed(secPerFrame: number, digits = 1): string {
+  const ips = 1 / secPerFrame;
+  const fmt = (x: number, d: number) => x.toFixed(d).replace(".", ",");
+  return `${fmt(secPerFrame, digits)} s/img · ${fmt(ips, ips < 1 ? 2 : 1)} img/s`;
+}

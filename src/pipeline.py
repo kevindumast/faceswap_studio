@@ -447,9 +447,10 @@ def swap_segment(clip: Path, mappings: list[FaceMapping], level: str, out: Path,
                 last_out = frame
                 i += 1
                 if preview is not None and (i == 1 or i % every == 0):
-                    small = cv2.resize(frame, (int(frame.shape[1] * 480 / frame.shape[0]) // 2 * 2, 480))
+                    k = min(1.0, 720 / min(frame.shape[:2]))   # petit côté ≤ 720 : net aussi pour une vidéo verticale
+                    small = frame if k == 1 else cv2.resize(frame, None, fx=k, fy=k, interpolation=cv2.INTER_AREA)
                     tmp = preview.with_suffix(".tmp.jpg")
-                    cv2.imwrite(str(tmp), small, [cv2.IMWRITE_JPEG_QUALITY, 82])
+                    cv2.imwrite(str(tmp), small, [cv2.IMWRITE_JPEG_QUALITY, 88])
                     tmp.replace(preview)
             if _tick(report, i, total):
                 paused = True
