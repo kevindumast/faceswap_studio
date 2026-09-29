@@ -64,6 +64,7 @@ def status() -> dict:
         "segment": {"min_s": cfg.segment.min_s, "max_s": cfg.segment.max_s},
         "photos_max": cfg.photos.max,
         "fps_cap": float(cfg.render.get("fps_cap", 30)),
+        "render_max_res": int(cfg.render.max_height),
         "upload_max_mb": cfg.upload.max_mb,
         "video_ext": cfg.upload.video_ext,
         "sec_per_frame": routes_models.sec_per_frame(FACE),

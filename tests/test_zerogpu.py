@@ -60,11 +60,29 @@ def test_gpu_option_accepted_only_when_configured(client, ready_video, make_sess
     ("Clé APP_KEY invalide.", "Clé APP_KEY refusée"),
     ("Could not fetch config for https://kevin-x.hf.space: 404 Not Found", "Space introuvable"),
     ("GPU task aborted", "coupé avant la fin"),
+    ("The requested GPU duration (340s) is larger than the maximum allowed", "refuse de réserver 340 s"),
 ])
 def test_friendly_errors(raw, expected):
     from app.worker.zerogpu_client import friendly
 
     assert expected in friendly(RuntimeError(raw))
+
+
+def test_friendly_error_without_text_names_its_type():
+    from app.worker.zerogpu_client import friendly
+
+    class ReadError(Exception):
+        pass
+
+    assert friendly(ReadError()).endswith("ReadError")
+
+
+def test_friendly_error_for_dropped_stream():
+    import concurrent.futures
+
+    from app.worker.zerogpu_client import friendly
+
+    assert "Connexion avec le Space coupée" in friendly(concurrent.futures.CancelledError())
 
 
 def test_remote_payload_sends_embeddings_not_photos():

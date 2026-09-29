@@ -6,6 +6,7 @@ import { styleOf } from "../lib/people";
 import { clamp, timecode } from "../lib/time";
 import { Button, Card, Notice, SectionTitle, cx } from "../components/ui";
 import { PersonBadge } from "./FacesStep";
+import { fitToScreen } from "../lib/fit";
 
 /** Choix pour une piste, en attente d'être appliqué. */
 type Choice = Omit<ReviewDecision, "issue">;
@@ -504,7 +505,7 @@ function Player({ review: r, persons, selected, onPickTrack, ref }: PlayerProps)
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="relative overflow-hidden rounded-[var(--radius-card)] bg-black ring-1 ring-line select-none" style={{ aspectRatio: `${r.width} / ${r.height}` }}>
+      <div className="relative overflow-hidden rounded-[var(--radius-card)] bg-black ring-1 ring-line select-none" style={fitToScreen(r.width, r.height, 320)}>
         <video ref={before} src={r.before_url} muted playsInline preload="auto" className="absolute inset-0 size-full object-contain" style={{ opacity: original ? 1 : 0 }} />
         <video
           ref={after}

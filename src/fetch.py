@@ -66,11 +66,10 @@ def video_info(url: str) -> dict:
     }
 
 
-def download(url: str, out_dir: Path, max_height: int, on_progress: Callable[[float], None] | None = None) -> Path:
-    """Télécharge ≤ max_height en mp4 (vidéo + audio fusionnés). Progression 0..1."""
+def download(url: str, out_dir: Path, max_res: int, on_progress: Callable[[float], None] | None = None) -> Path:
+    """Télécharge la meilleure qualité ≤ max_res (petit côté) en mp4 (vidéo + audio fusionnés). Progression 0..1."""
     url = normalize_url(url)
     out_dir.mkdir(parents=True, exist_ok=True)
-    h = max_height
     state = {"streams_done": 0}
 
     def hook(d: dict) -> None:
@@ -86,8 +85,11 @@ def download(url: str, out_dir: Path, max_height: int, on_progress: Callable[[fl
             state["streams_done"] += 1
 
     opts = {
-        "format": (f"bv*[height<={h}][ext=mp4]+ba[ext=m4a]/b[height<={h}][ext=mp4]/"
-                   f"bv*[height<={h}]+ba/b[height<={h}]/b"),
+        # Tri plutôt que filtre [height<=N] : « res » est le petit côté, comme le « p » de YouTube. Un filtre sur la
+        # hauteur prenait du 360×640 pour un Short vertical au lieu du 720×1280. À résolution égale : H.264 + AAC
+        # (décodage rapide et sûr), puis le meilleur débit.
+        "format": "bv*+ba/b",
+        "format_sort": [f"res:{int(max_res)}", "+codec:avc:m4a", "tbr"],
         "merge_output_format": "mp4",
         "outtmpl": str(out_dir / "source.%(ext)s"),
         "noplaylist": True,

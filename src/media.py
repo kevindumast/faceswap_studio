@@ -104,10 +104,10 @@ def _even(x: float) -> int:
     return max(2, int(round(x / 2)) * 2)
 
 
-def scaled_size(info: VideoInfo, max_height: int) -> tuple[int, int]:
-    if info.height <= max_height:
-        return _even(info.width), _even(info.height)
-    return _even(info.width * max_height / info.height), max_height
+def scaled_size(info: VideoInfo, max_res: int) -> tuple[int, int]:
+    """Réduite si le petit côté (le « p » de 720p, y compris pour une vidéo verticale) dépasse max_res."""
+    scale = min(1.0, max_res / min(info.width, info.height))
+    return _even(info.width * scale), _even(info.height * scale)
 
 
 def make_proxy(src: Path, dst: Path, info: VideoInfo, max_height: int,
@@ -146,9 +146,10 @@ def make_filmstrip(proxy: Path, out_jpg: Path, out_json: Path, info: VideoInfo, 
     return meta
 
 
-def extract_frame(src: Path, t: float, max_height: int | None = None) -> np.ndarray:
-    """Une frame exacte au temps t (BGR)."""
-    vf = [] if max_height is None else ["-vf", f"scale=-2:'min({max_height},ih)'"]
+def extract_frame(src: Path, t: float, max_res: int | None = None) -> np.ndarray:
+    """Une frame exacte au temps t (BGR), réduite comme scaled_size si le petit côté dépasse max_res."""
+    k = f"min(1,{max_res}/min(iw,ih))"
+    vf = [] if max_res is None else ["-vf", f"scale='round(iw*{k}/2)*2':'round(ih*{k}/2)*2'"]
     proc = subprocess.run(
         [binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-ss", f"{max(t, 0):.3f}", "-i", str(src),
          *vf, "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"],
