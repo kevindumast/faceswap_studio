@@ -6,11 +6,14 @@ ni du CPU vers le GPU, ni l'inverse en cas d'échec (l'utilisateur relance lui-m
 from __future__ import annotations
 
 import concurrent.futures
+import datetime
 import json
 import re
 import shutil
 import tempfile
 import time
+import urllib.parse
+import uuid
 from pathlib import Path
 from typing import Callable
 
@@ -81,7 +84,7 @@ def _runtime(space: str):
     try:
         return HfApi(token=settings()["token"] or None).get_space_runtime(space)
     except Exception as exc:
-        raise ZeroGPUError(friendly(exc)) from exc
+        raise space_error(exc) from exc
 
 
 def state(kind: str = "faces", max_age: float = 5.0) -> dict:
@@ -94,6 +97,7 @@ def state(kind: str = "faces", max_age: float = 5.0) -> dict:
     if cached and time.time() - cached[0] < max_age and cached[1]["space"] == space:
         return cached[1]
     rt = _runtime(space)
+    refresh_pro()
     ph = phase(rt.stage)
     key = f"space_waking:{kind}"
     since = float(db.get_meta(key) or 0) or None
@@ -110,6 +114,33 @@ def state(kind: str = "faces", max_age: float = 5.0) -> dict:
     return out
 
 
+def account_pro() -> bool | None:
+    """Compte Hugging Face PRO (quota ZeroGPU de 40 min/jour au lieu de 5) ? None tant que ce n'est pas connu."""
+    try:
+        q = json.loads(db.get_meta("zerogpu_pro") or "null")
+    except ValueError:
+        return None
+    return q.get("pro") if q else None
+
+
+def refresh_pro(max_age: float = 3600) -> None:
+    """Relit le statut PRO avec le jeton de l'appli, au plus une fois par heure (erreur : on garde l'ancien)."""
+    try:
+        q = json.loads(db.get_meta("zerogpu_pro") or "null")
+    except ValueError:
+        q = None
+    token = settings()["token"]
+    if not token or (q and time.time() - q.get("at", 0) < max_age):
+        return
+    from huggingface_hub import HfApi
+
+    try:
+        pro = bool(HfApi(token=token).whoami().get("isPro"))
+    except Exception:
+        return
+    db.set_meta("zerogpu_pro", json.dumps({"pro": pro, "at": time.time()}))
+
+
 def wake(kind: str = "faces") -> dict:
     """Réveille un Space endormi ou planté (redémarrage, sans reconstruction). Sans effet s'il tourne ou démarre."""
     st = state(kind, max_age=0)
@@ -119,7 +150,7 @@ def wake(kind: str = "faces") -> dict:
         try:
             HfApi(token=settings()["token"] or None).restart_space(st["space"])
         except Exception as exc:
-            raise ZeroGPUError(friendly(exc)) from exc
+            raise space_error(exc) from exc
         db.set_meta(f"space_waking:{kind}", str(time.time()))
         _states.pop(kind, None)
     return state(kind, max_age=0)
@@ -172,7 +203,12 @@ def friendly(exc: Exception) -> str:
                 "que le maximum autorisé pour ton compte (gratuit). Rien n'a été décompté du quota. Passe en 360p ou "
                 "raccourcis le passage (en PRO : tâches jusqu'à 40 min).")
     if "quota" in low:
-        return "Quota ZeroGPU épuisé pour aujourd'hui (5 min/jour en gratuit, 40 en PRO). Relance sur ce PC ou réessaie demain."
+        q = quota_info(msg) or {}
+        detail = (f" : ce rendu réserve {q['requested_s']} s de GPU, il en reste {q['left_s']} s"
+                  if q.get("left_s") is not None else " pour l'instant")
+        when = f"Réessaie {retry_text(q['wait_s'])}" if q.get("wait_s") is not None else "Réessaie demain"
+        return (f"Quota ZeroGPU épuisé{detail} (5 min/jour en gratuit, 40 en PRO). {when}, ou raccourcis le passage "
+                "(niveaux 1-2 : relance aussi sur ce PC).")
     if "app_key" in low:
         return "Clé APP_KEY refusée par le Space : relance scripts/deploy_space.py --save ou recopie la clé."
     if "401" in msg or "403" in msg or "unauthorized" in low or "not found" in low or "404" in msg:
@@ -185,6 +221,75 @@ def friendly(exc: Exception) -> str:
     return f"Erreur du Space GPU : {msg[:300]}"
 
 
+# --- Quota ZeroGPU : rien ne permet de le lire sans réserver de GPU ; seuls les refus en donnent l'état exact ---------
+
+def quota_info(msg: str) -> dict | None:
+    """Chiffres d'un refus de quota : « (204s requested vs. 95s left). Try again in 2:14:05 » (None : pas de chiffres)."""
+    need = re.search(r"\((\d+)s requested vs\. (\d+)s left\)", msg)
+    wait = re.search(r"try again in (?:(\d+) days?, )?(\d+):(\d{2}):(\d{2})", msg.lower())
+    if not (need or wait):
+        return None
+    return {"requested_s": int(need[1]) if need else None, "left_s": int(need[2]) if need else None,
+            "wait_s": int(wait[1] or 0) * 86400 + int(wait[2]) * 3600 + int(wait[3]) * 60 + int(wait[4]) if wait else None}
+
+
+def clock_text(ts: float, now: float | None = None) -> str:
+    """Heure locale d'un instant à venir : « vers 18 h 20 », « demain vers 18 h 20 », « le 02/10 vers 18 h 20 »."""
+    at = datetime.datetime.fromtimestamp(ts)
+    today = datetime.datetime.fromtimestamp(time.time() if now is None else now).date()
+    hm = f"vers {at.hour} h {at.minute:02d}"
+    if at.date() == today:
+        return hm
+    if at.date() == today + datetime.timedelta(days=1):
+        return f"demain {hm}"
+    return f"le {at:%d/%m} {hm}"
+
+
+def retry_text(wait_s: int, now: float | None = None) -> str:
+    """« dans 19 h 29 (demain vers 18 h 20) » : délai annoncé par ZeroGPU, et l'heure qu'il donne."""
+    now = time.time() if now is None else now
+    minutes = max(1, wait_s // 60)
+    delay = f"{minutes // 60} h {minutes % 60:02d}" if minutes >= 60 else f"{minutes} min"
+    return f"dans {delay} ({clock_text(now + wait_s, now)})"
+
+
+def record_quota(msg: str) -> None:
+    """Retient ce qu'un refus dit du quota (reste, heure du prochain essai) : l'appli l'affiche jusqu'à cette heure."""
+    q = quota_info(msg)
+    if q and q["wait_s"] is not None:
+        now = time.time()
+        db.set_meta("zerogpu_quota", json.dumps({"left_s": q["left_s"], "retry_at": now + q["wait_s"], "seen_at": now}))
+
+
+def quota_status() -> dict | None:
+    """Dernier état connu du quota, tant que l'heure du prochain essai n'est pas passée (sinon None)."""
+    try:
+        q = json.loads(db.get_meta("zerogpu_quota") or "null")
+    except ValueError:
+        return None
+    return q if q and q.get("retry_at", 0) > time.time() else None
+
+
+def consume_quota(seconds: float) -> None:
+    """Après un calcul réussi : le reste connu baisse d'autant."""
+    q = quota_status()
+    if q and q.get("left_s") is not None and seconds > 0:
+        q["left_s"] = max(0, round(q["left_s"] - seconds))
+        db.set_meta("zerogpu_quota", json.dumps(q))
+
+
+def space_error(exc: BaseException) -> ZeroGPUError:
+    """Erreur renvoyée par le Space : message compréhensible, et état du quota retenu si ZeroGPU l'a donné."""
+    record_quota(str(exc))
+    return ZeroGPUError(friendly(exc))
+
+
+def _stats(stats) -> dict:
+    result = json.loads(stats) if isinstance(stats, str) else (stats or {})
+    consume_quota(float(result.get("gpu_seconds") or 0))
+    return result
+
+
 class ZeroGPUClient:
     def __init__(self, space: str, token: str, key: str):
         from gradio_client import Client
@@ -194,7 +299,10 @@ class ZeroGPUClient:
         try:
             self.client = Client(space, token=token or None, verbose=False, download_files=str(self.downloads))
         except Exception as exc:
-            raise ZeroGPUError(friendly(exc)) from exc
+            raise space_error(exc) from exc
+        # Space à jour : suivi par requêtes courtes (passe les proxys qui retiennent les réponses en flux) ;
+        # sinon (Space pas encore redéployé) : flux continu de gradio_client.
+        self.short_requests = _has_endpoint(self.client, "/status")
 
     @classmethod
     def from_settings(cls, kind: str = "faces") -> "ZeroGPUClient":
@@ -209,43 +317,43 @@ class ZeroGPUClient:
         try:
             return json.loads(self.client.predict(self.key, api_name="/health"))
         except Exception as exc:
-            raise ZeroGPUError(friendly(exc)) from exc
+            raise space_error(exc) from exc
 
     def swap(self, clip: Path, payload: dict, out: Path, on_progress: Callable[[int, int], None] | None = None,
              should_cancel: Callable[[], bool] | None = None, poll: float = 1.0, on_stage: StageCallback | None = None) -> dict:
         """Envoie l'extrait (sans son) et écrit la vidéo remplacée dans `out`. Renvoie les stats du Space."""
-        from gradio_client import handle_file
-
-        video, stats = self._run("/swap", (handle_file(str(clip)), json.dumps(payload), self.key), on_progress,
-                                 should_cancel, poll, on_stage)
+        video, stats = self._run("/swap", [clip], payload, on_progress, should_cancel, poll, on_stage)
         shutil.copy(_path(video), out)
         shutil.rmtree(self.downloads, ignore_errors=True)
-        return json.loads(stats) if isinstance(stats, str) else (stats or {})
+        return _stats(stats)
 
     def replace(self, clip: Path, reference: Path, payload: dict, out: Path, mask_out: Path,
                 on_progress: Callable[[int, int], None] | None = None, should_cancel: Callable[[], bool] | None = None,
                 poll: float = 2.0, on_stage: StageCallback | None = None) -> dict:
         """Niveau 4 : extrait (sans son) + photo de la personne → vidéo générée (30 i/s) et masque de la zone refaite."""
-        from gradio_client import handle_file
-
-        video, mask, stats = self._run(
-            "/replace", (handle_file(str(clip)), handle_file(str(reference)), json.dumps(payload), self.key),
-            on_progress, should_cancel, poll, on_stage)
+        video, mask, stats = self._run("/replace", [clip, reference], payload, on_progress, should_cancel, poll,
+                                       on_stage)
         shutil.copy(_path(video), out)
         shutil.copy(_path(mask), mask_out)
         shutil.rmtree(self.downloads, ignore_errors=True)
-        return json.loads(stats) if isinstance(stats, str) else (stats or {})
+        return _stats(stats)
 
-    def _run(self, api_name: str, args: tuple, on_progress, should_cancel, poll: float, on_stage=None):
+    def _run(self, api_name: str, files: list[Path], payload: dict, on_progress, should_cancel, poll: float,
+             on_stage=None):
         """Soumet un appel, relaie la progression, annule si demandé ; renvoie le résultat brut du Space.
 
         on_stage(étape, fait, total, détail) : « queue » (rang, taille de la file du Space), « gpu » (calcul lancé,
         en attente d'un GPU libre chez ZeroGPU ou en préparation), « progress » (étape annoncée par le Space).
         """
+        if self.short_requests:
+            return self._run_short(api_name, files, payload, on_progress, should_cancel, poll, on_stage)
+        from gradio_client import handle_file
+
+        args = (*(handle_file(str(f)) for f in files), json.dumps(payload), self.key)
         try:
             job = self.client.submit(*args, api_name=api_name)
         except Exception as exc:
-            raise ZeroGPUError(friendly(exc)) from exc
+            raise space_error(exc) from exc
         while not job.done():
             if should_cancel and should_cancel():
                 job.cancel()
@@ -267,7 +375,130 @@ class ZeroGPUClient:
         try:
             return job.result()
         except Exception as exc:
-            raise ZeroGPUError(friendly(exc)) from exc
+            raise space_error(exc) from exc
+
+    # --- Suivi par requêtes courtes --------------------------------------------------------------------------------
+    # Un proxy d'entreprise peut retenir les réponses en flux (le suivi de gradio_client) jusqu'à leur fin et les
+    # couper au bout de ~3 min, ce qui fait annuler le calcul par Gradio. Ici, chaque requête est courte : envoi des
+    # fichiers, lancement (/call/…), état toutes les `poll` s (/run/status, hors file d'attente), puis résultat une
+    # fois le calcul fini. Une coupure passagère ne coûte qu'une lecture d'état : le calcul continue sur le Space.
+
+    def _run_short(self, api_name: str, files: list[Path], payload: dict, on_progress, should_cancel, poll: float,
+                   on_stage=None):
+        import httpx
+
+        job = uuid.uuid4().hex
+        base = self.client.src_prefixed
+        with httpx.Client(headers=self.client.headers, timeout=httpx.Timeout(120, connect=30)) as http:
+            try:
+                data = [self._upload(http, base, f) for f in files]
+                r = http.post(f"{base}call{api_name}", json={"data": [*data, json.dumps({**payload, "job": job}), self.key]})
+                r.raise_for_status()
+                event = r.json()["event_id"]
+            except Exception as exc:
+                raise space_error(exc) from exc
+            state = self._follow(http, base, job, on_progress, should_cancel, poll, on_stage)
+            if state["state"] == "error":
+                try:   # vide les messages que Gradio garde pour ce calcul
+                    self._result(http, f"{base}call{api_name}/{event}")
+                except Exception:
+                    pass
+                raise space_error(RuntimeError(state.get("error") or ""))
+            try:
+                outputs = self._result(http, f"{base}call{api_name}/{event}")
+                return tuple(self._download(http, base, o) if isinstance(o, dict) and o.get("url") else o
+                             for o in outputs)
+            except ZeroGPUError:
+                raise
+            except Exception as exc:
+                raise space_error(exc) from exc
+
+    def _follow(self, http, base: str, job: str, on_progress, should_cancel, poll: float, on_stage,
+                max_unreachable_s: float = 120, max_unknown_s: float = 900) -> dict:
+        """Lit l'état du calcul jusqu'à sa fin (« done » ou « error ») et relaie sa progression."""
+        started = False
+        unreachable_since = None
+        unknown_since = time.time()
+        while True:
+            if should_cancel and should_cancel():
+                try:  # le Space s'arrête à sa prochaine étape et libère le GPU
+                    http.post(f"{base}run/cancel", json={"data": [job, self.key]}, timeout=20)
+                except Exception:
+                    pass
+                raise RemoteCancelled()
+            try:
+                r = http.post(f"{base}run/status", json={"data": [job, self.key]}, timeout=30)
+                r.raise_for_status()
+                st = json.loads(r.json()["data"][0])
+                unreachable_since = None
+            except Exception as exc:  # coupure passagère : le calcul continue sur le Space, on relit plus tard
+                unreachable_since = unreachable_since or time.time()
+                if time.time() - unreachable_since > max_unreachable_s:
+                    raise space_error(exc) from exc
+                time.sleep(poll)
+                continue
+            state = st.get("state")
+            if state in ("done", "error"):
+                return st
+            if state == "unknown":   # pas encore commencé : file d'attente du Space (un calcul à la fois)
+                if started:
+                    raise ZeroGPUError("Le Space a redémarré pendant le calcul : relance le rendu.")
+                if time.time() - unknown_since > max_unknown_s:
+                    raise ZeroGPUError("Le Space n'a pas commencé le calcul (file d'attente bloquée ?) : relance le rendu.")
+                if on_stage:
+                    on_stage("queue", 0, 0, None)
+            else:
+                started = True
+                done, total = int(st.get("done") or 0), int(st.get("total") or 0)
+                if state == "running" and total:
+                    if on_progress:
+                        on_progress(done, total)
+                    if on_stage:
+                        on_stage("progress", done, total, st.get("desc"))
+                elif on_stage:   # « waiting » : en attente d'un GPU chez ZeroGPU
+                    on_stage("gpu", 0, 0, None)
+            time.sleep(poll)
+
+    def _upload(self, http, base: str, path: Path) -> dict:
+        with open(path, "rb") as f:
+            r = http.post(f"{base}upload", files=[("files", (Path(path).name, f))], timeout=_timeout(300))
+        r.raise_for_status()
+        return {"path": r.json()[0], "orig_name": Path(path).name, "meta": {"_type": "gradio.FileData"}}
+
+    def _result(self, http, url: str) -> list:
+        """Sorties d'un calcul terminé (événement « complete » du flux /call, court puisque le calcul est fini)."""
+        r = http.get(url, timeout=_timeout(120))
+        r.raise_for_status()
+        event, data = None, None
+        for block in r.text.split("\n\n"):
+            fields = dict(line.split(": ", 1) for line in block.splitlines() if ": " in line)
+            if fields.get("event") in ("complete", "error"):
+                event, data = fields["event"], fields.get("data")
+        if event != "complete":
+            raise space_error(RuntimeError(data or "le Space n'a pas renvoyé de résultat"))
+        return json.loads(data)
+
+    def _download(self, http, base: str, file: dict) -> str:
+        dest = self.downloads / (file.get("orig_name") or Path(file["path"]).name)
+        with http.stream("GET", urllib.parse.urljoin(base, file["url"]), timeout=_timeout(300)) as r:
+            r.raise_for_status()
+            with open(dest, "wb") as out:
+                for chunk in r.iter_bytes():
+                    out.write(chunk)
+        return str(dest)
+
+
+def _timeout(seconds: float):
+    import httpx
+
+    return httpx.Timeout(seconds, connect=30)
+
+
+def _has_endpoint(client, name: str) -> bool:
+    try:
+        return name in client.view_api(print_info=False, return_format="dict")["named_endpoints"]
+    except Exception:   # client de test, ou Space sans description d'API
+        return False
 
 
 def _path(file) -> str:

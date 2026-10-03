@@ -14,7 +14,7 @@ type Props = {
 };
 
 export function SegmentStep({ video, status, selection, onChange, onNext }: Props) {
-  const min = status?.segment.min_s ?? 5;
+  const min = status?.segment.min_s ?? 0.5;
   const max = status?.segment.max_s ?? 60;
   // Même hypothèse que l'option cochée par défaut à l'étape Rendu : 30 i/s max.
   const fps = cappedFps(video.info!.fps, status?.fps_cap ?? 30);

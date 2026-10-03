@@ -84,14 +84,14 @@ levels:
     plate_samples: 24           # images réparties sur l'extrait pour reconstruire le décor caché par l'ancienne tête
   character:                    # niveau 4 : Wan2.2-Animate-14B sur ton 2e Space ZeroGPU (space_character/)
     max_s: 10                   # durée maximale d'un extrait
-    steps: 6                    # étapes de débruitage (qualité ↔ quota : 20 = qualité officielle, ×3 plus cher)
-    gpu_s_per_second:           # temps GPU par seconde d'extrait, pour 6 étapes (recalé après le 1er rendu)
-      360p: 12
-      480p: 26
+    steps: 4                    # étapes de débruitage : 4 = modèle distillé (qualité proche des 20 étapes officielles)
+    gpu_s_per_block_step:       # temps GPU d'une étape d'un bloc de 77 images (mesuré : 16 s en 360p ; recalé à chaque rendu)
+      360p: 16
+      480p: 36
     feather: 0.015              # adoucissement du bord de la zone recollée (fraction de la hauteur)
 
 segment:
-  min_s: 5
+  min_s: 0.5            # la recherche des visages du passage (étape Visages) demande au moins 0,5 s
   max_s: 60
 
 upload:
@@ -148,9 +148,8 @@ proxy:
 
 # GPU distant (Space Hugging Face ZeroGPU) : case « Utiliser le GPU » de chaque rendu, jamais activée d'office.
 zerogpu:
-  free_quota_min: 5            # quota quotidien d'un compte gratuit (40 en PRO)
-
-retention_hours: 48
+  free_quota_min: 5            # quota quotidien d'un compte gratuit
+  pro_quota_min: 40            # quota quotidien d'un compte PRO (détecté avec le jeton Hugging Face)
 
 server:
   host: 127.0.0.1

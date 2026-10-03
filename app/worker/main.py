@@ -13,7 +13,7 @@ from app import db
 from app.api.routes_faces import load_person_assets
 from app.worker.zerogpu_client import RemoteCancelled, ZeroGPUClient, wait_until_ready
 from src import media, review
-from src.character import Reference, choose_reference, face_ratio, recompose
+from src.character import Reference, choose_reference, face_ratio, measured_block_step, recompose
 from src.config import accelerator, load_config
 from src.levels import CHARACTER, FACE, make_strategy
 from src.pipeline import (Cancelled, Checkpoint, FaceMapping, Paused, RenderOptions, RenderStats, assemble, cut, finish,
@@ -132,13 +132,14 @@ def run_character(job: dict, source: Path, opts: RenderOptions, mappings: list[F
     count = len(mappings)
     grid = [1, 1] if count == 1 else list(ccfg.get("mask_grid_multi", [4, 8]))
     local = relative_targets(mappings, opts.start, opts.end - opts.start)
-    resolution, steps = params.get("resolution", "360p"), int(ccfg.get("steps", 6))
+    resolution = params.get("resolution", "480p")
+    steps = int(params.get("steps") or ccfg.get("steps", 4))
     gpu_seconds = 0.0
     for k, (mapping, reference) in enumerate(zip(local, references), start=1):
         # Étapes d'un passage : « generate@2/2 » = 2e personne sur 2 (rien d'ajouté s'il n'y en a qu'une).
         step = progress if count == 1 else (lambda stage, done, total, k=k: progress(f"{stage}@{k}/{count}", done, total))
         payload = {"t": mapping.target["t"], "box": mapping.target["box"], "resolution": resolution, "steps": steps,
-                   "seed": 42, "mask_grid": grid}
+                   "relight": bool(params.get("relight", False)), "seed": 42, "mask_grid": grid}
         generated, mask = out / f"generated_{k}.mp4", out / f"generated_mask_{k}.mp4"
         try:
             wake_space("character", job["id"], step)
@@ -164,6 +165,8 @@ def run_character(job: dict, source: Path, opts: RenderOptions, mappings: list[F
             f.unlink(missing_ok=True)
         current = target
 
+    if params.get("face_pass", True):
+        stats.warnings += face_pass(out / "swapped.mp4", local, out, progress, restore=True)
     progress("assemble", 0, 1)
     stats.swapped = stats.frames
     assemble(source, segment, out / "swapped.mp4", opts, out / "result.mp4", out)
@@ -171,11 +174,35 @@ def run_character(job: dict, source: Path, opts: RenderOptions, mappings: list[F
     stats.seconds = time.perf_counter() - t0
     stats.sec_per_frame = stats.seconds / max(1, stats.frames)
     stats.sec_per_computed = gpu_seconds / max(1, stats.frames)
-    # Temps GPU réel par seconde d'extrait et par personne, ramené à 6 étapes : recale l'estimation avant rendu.
-    length = max(0.1, opts.end - opts.start)
+    # Temps GPU réel d'une étape de bloc (par passage, préparation déduite) : recale l'estimation avant rendu.
     per_pass = gpu_seconds / count
-    db.set_meta(f"character_gpu_s:{resolution}", str(max(1.0, (per_pass - 45) / length * 6 / steps)))
+    db.set_meta(f"character_block_step_s:{resolution}",
+                str(measured_block_step(per_pass, max(0.1, opts.end - opts.start), steps)))
     return stats
+
+
+def face_pass(video: Path, mappings: list[FaceMapping], out: Path, progress, restore: bool) -> list[str]:
+    """Niveau 4, après la génération : le visage de chaque personne est remplacé par son vrai visage, sur ce PC et en
+    pleine résolution (même technique qu'au niveau 1, « netteté » si le modèle est installé).
+
+    Wan génère la personne entière à 360p ou 480p : la gestuelle et les habits suivent, mais le visage y fait quelques
+    dizaines de pixels et ne ressemble pas assez. Ici, il est refait net, là où il se trouve dans la vidéo générée.
+    Visage introuvable : la vidéo générée est gardée telle quelle (avec un avertissement), le rendu ne s'arrête pas.
+    """
+    from src import models
+    from src.pipeline import RenderError, swap_segment
+
+    if not models.is_ready("base"):
+        return ["Visage non retouché : les modèles du niveau 1 ne sont pas installés (bouton « Installer »)."]
+    restore = restore and models.is_ready("restore")
+    faced = out / "swapped_face.mp4"
+    try:
+        stats = swap_segment(video, mappings, FACE, faced, stabilize=True, restore=restore,
+                             progress=lambda stage, done, total: progress("face", done, total))
+    except RenderError as exc:
+        return [f"Visage non retouché ({exc})"]
+    faced.replace(video)
+    return [f"Retouche du visage : {w}" for w in stats.warnings]
 
 
 def job_options(params: dict) -> RenderOptions:
@@ -250,7 +277,7 @@ def run_job(job: dict) -> None:
 
     def progress(stage: str, done: int, total: int) -> None:
         now = time.time()
-        if stage in ("swap", "fix") and done not in (1, total) and now - last[0] < 0.5:
+        if stage in ("swap", "fix", "face") and done not in (1, total) and now - last[0] < 0.5:
             return
         last[0] = now
         status = db.job_status(job_id)

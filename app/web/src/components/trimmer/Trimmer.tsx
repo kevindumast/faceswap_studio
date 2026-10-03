@@ -413,7 +413,7 @@ export function Trimmer({ video, selection, onChange, min, max, badge }: Props) 
             <span className="text-[11px] font-medium tracking-wide text-faint uppercase">Durée</span>
             <div className="flex h-10 items-center font-mono text-[15px] tabular">
               {len.toFixed(2).replace(".", ",")} s
-              <span className="ml-2 text-faint">({min}–{max} s)</span>
+              <span className="ml-2 text-faint">({String(min).replace(".", ",")}–{max} s)</span>
             </div>
           </div>
           <div className="ml-auto flex flex-col gap-1">

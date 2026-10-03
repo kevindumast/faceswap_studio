@@ -74,7 +74,7 @@ export function FacesStep(p: Props) {
     enabled: !!p.faceSetId,
     retry: false,
   });
-  // Session supprimée (nettoyage automatique) : on repart d'une session vide. La bibliothèque, elle, reste.
+  // Session introuvable : on repart d'une session vide. La bibliothèque, elle, reste.
   const { onFaceSet } = p;
   useEffect(() => {
     if (faceSet.error) onFaceSet(null);

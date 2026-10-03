@@ -33,7 +33,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-VERSION = "1"
+VERSION = "2"
 APP_KEY = os.environ.get("APP_KEY", "")
 WAN_COMMIT = "1ea34ff48f87168174e12956e200b1d908b1c5ff"          # github.com/Wan-Video/Wan2.2
 WAN_ROOT = Path(os.environ.get("WAN_ROOT", "/tmp/wan2.2"))
@@ -48,13 +48,21 @@ WEIGHTS = [  # ~57 Go : tout le dépôt sauf les poids inutiles (xlm-roberta com
 FPS = 30                                               # cadence de travail de Wan-Animate
 RESOLUTIONS = {"360p": (640, 360), "480p": (832, 480)}  # surface visée, le format de la vidéo est conservé
 MAX_SECONDS = 10.5
+BLOCK_FRAMES = 76     # Wan-Animate génère par blocs de 77 images, dont 1 reprise du bloc précédent
+MAX_GPU_S = 2400      # réservation maximale d'un compte PRO (40 min) ; ZeroGPU refuse au-delà du maximum du compte
 DRY_RUN = os.environ.get("FACESWAP_SPACE_DRY_RUN") == "1"   # vérification locale : code et imports, sans poids ni GPU
 
 
+def blocks(seconds: float) -> int:
+    """Blocs de génération d'un extrait (le coût dépend des blocs, pas directement de la durée)."""
+    return max(1, math.ceil((max(1, round(seconds * FPS)) - 1) / BLOCK_FRAMES))
+
+
 def gpu_seconds(seconds: float, resolution: str, steps: int) -> float:
-    """Temps de GPU attendu (même formule que l'appli, config.yaml → levels.character)."""
-    per_s = {"360p": 12.0, "480p": 26.0}.get(resolution, 12.0)
-    return 45 + seconds * per_s * steps / 6
+    """Temps de GPU attendu (même formule que l'appli, config.yaml → levels.character) : préparation (squelette,
+    silhouette) proportionnelle à la durée, puis chaque étape de chaque bloc. Mesuré : 5 s en 360p, 6 étapes = 232 s."""
+    per_block_step = {"360p": 16.0, "480p": 36.0}.get(resolution, 16.0)
+    return 10 + 6 * seconds + blocks(seconds) * steps * per_block_step
 
 
 def _fix_onnxruntime() -> None:
@@ -112,7 +120,8 @@ import gradio as gr  # noqa: E402
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
-from huggingface_hub import snapshot_download  # noqa: E402
+from huggingface_hub import hf_hub_download, snapshot_download  # noqa: E402
+from safetensors.torch import load_file as load_safetensors  # noqa: E402
 
 try:
     import onnxruntime
@@ -126,6 +135,11 @@ if not DRY_RUN:
     snapshot_download("Wan-AI/Wan2.2-Animate-14B", local_dir=str(CKPT), allow_patterns=WEIGHTS)
 
 import wan.animate as wan_animate  # noqa: E402
+
+# Ordre de l'échantillonneur, choisi à chaque calcul : 1 (Euler) pour le modèle distillé, 2 (DPM++ officiel) sinon.
+SOLVER_ORDER = 2
+_DPM = wan_animate.FlowDPMSolverMultistepScheduler
+wan_animate.FlowDPMSolverMultistepScheduler = lambda *a, **k: _DPM(*a, **{"solver_order": SOLVER_ORDER, **k})
 from wan.configs import WAN_CONFIGS  # noqa: E402
 
 # Prétraitement officiel (dossier preprocess) : squelette, visage, silhouette.
@@ -137,6 +151,8 @@ from process_pipepline import ProcessPipeline  # noqa: E402
 from sam_utils import build_sam2_video_predictor  # noqa: E402
 from utils import get_aug_mask, get_face_bboxes, get_frame_indices, get_mask_body_img, padding_resize, resize_by_area  # noqa: E402
 
+import distill  # noqa: E402
+import jobs  # noqa: E402  (space/jobs.py, copié par deploy_space.py)
 from targeting import pick_track  # noqa: E402
 
 HALF = (torch.float16, torch.bfloat16)
@@ -184,7 +200,10 @@ class FixedPrompts:
 
 
 MODEL = MASKER = None
+DISTILL: dict = {}    # module distillé (poids sur CPU), fusionné dans le modèle au 1er calcul de chaque processus GPU
 if not DRY_RUN:
+    print("Module distillé lightx2v (4 étapes)…", flush=True)
+    DISTILL = load_safetensors(hf_hub_download(distill.REPO, distill.FILE))
     print("Chargement du modèle…", flush=True)
     MODEL = wan_animate.WanAnimate(config=CFG, checkpoint_dir=str(CKPT), device_id=0, rank=0, t5_cpu=True,
                                    init_on_cpu=False, convert_model_dtype=True, use_relighting_lora=True)
@@ -202,10 +221,15 @@ print("Prêt.", flush=True)
 
 
 class Report:
-    """Progression unique pour l'appli : squelette 12 %, silhouette 8 %, génération 80 % (étapes de débruitage)."""
+    """Progression unique pour l'appli : squelette 12 %, silhouette 8 %, génération 80 % (étapes de débruitage).
 
-    def __init__(self, progress, frames: int, gen_steps: int):
+    Publiée à la fois pour gradio_client (gr.Progress) et dans l'état du calcul (jobs), où l'appli la lit par
+    requêtes courtes ; chaque étape vérifie aussi si l'appli a demandé l'arrêt.
+    """
+
+    def __init__(self, progress, frames: int, gen_steps: int, job: str | None = None):
         self.progress, self.frames, self.gen_steps, self.gen_done = progress, max(1, frames), max(1, gen_steps), 0
+        self.job = job
 
     def __call__(self, stage: str, done: int = 0) -> None:
         if stage == "squelette":
@@ -214,7 +238,9 @@ class Report:
             frac = 0.12
         else:
             frac = 0.20 + 0.80 * done / self.gen_steps
-        self.progress((min(999, int(frac * 1000)), 1000), desc=stage, unit="‰")
+        permille = min(999, int(frac * 1000))
+        jobs.progress(self.job, permille, 1000, stage)
+        self.progress((permille, 1000), desc=stage, unit="‰")
 
     def step(self) -> None:
         self.gen_done += 1
@@ -300,29 +326,72 @@ def write_rgb(path: Path, frames, fps: int = FPS, crf: int = 14) -> None:
 def health(key: str) -> str:
     _check(key)
     return json.dumps({"version": VERSION, "levels": ["character"], "zerogpu": bool(os.environ.get("SPACE_ID")),
-                       "resolutions": list(RESOLUTIONS)})
+                       "resolutions": list(RESOLUTIONS), "distilled": True, "default_steps": distill.STEPS,
+                       "options": ["steps", "relight"]})
+
+
+def status(job: str, key: str) -> str:
+    """État d'un calcul lancé par /call/replace (requête courte, hors file d'attente)."""
+    _check(key)
+    return json.dumps(jobs.read(job))
+
+
+def cancel(job: str, key: str) -> str:
+    """Demande l'arrêt d'un calcul : il s'arrête à sa prochaine étape et libère le GPU."""
+    _check(key)
+    jobs.request_cancel(job)
+    return "ok"
 
 
 def _duration(clip: str, ref: str, payload: str, key: str, progress=None) -> int:
-    """Durée de GPU réservée : estimation + 30 % de marge (le quota ne décompte que le temps réellement utilisé)."""
+    """Durée de GPU réservée : estimation + 15 % de marge (le quota ne décompte que le temps réellement utilisé ;
+    ZeroGPU multiplie encore la réservation par 1,5 sur ses cartes Blackwell)."""
     try:
         data = json.loads(payload)
         seconds = min(MAX_SECONDS, VideoReader(clip).get_frame_timestamp(-1)[-1])
-        return int(min(600, 1.3 * gpu_seconds(seconds, data.get("resolution", "360p"), int(data.get("steps", 6)))))
+        steps = int(data.get("steps", distill.STEPS))
+        return int(min(MAX_GPU_S, 1.15 * gpu_seconds(seconds, data.get("resolution", "360p"), steps)))
     except Exception:
         return 240
 
 
-@gpu(duration=_duration, size="large")
+def _prepare_model(relight: bool) -> None:
+    """Dans le processus GPU : module distillé fusionné une fois (le processus peut resservir), échantillonneur
+    d'Euler adapté aux 4 étapes distillées, rééclairage de la scène activé ou non pour ce calcul."""
+    global SOLVER_ORDER
+    model = MODEL.noise_model
+    if not getattr(model, "faceswap_distilled", False):
+        t0 = time.time()
+        count = distill.merge(model, DISTILL)
+        model.faceswap_distilled = True
+        print(f"Module distillé fusionné : {count} couches en {time.time() - t0:.1f} s", flush=True)
+    SOLVER_ORDER = 1
+    if relight:
+        model.enable_adapters()
+    else:   # la personne garde les couleurs de sa photo (le rééclairage teintait tout de la lumière du décor)
+        model.disable_adapters()
+
+
 def replace(clip: str, ref: str, payload: str, key: str, progress=gr.Progress()) -> tuple[str, str, str]:
+    """Point d'entrée /replace : calcul GPU, avec son état tenu à jour pour le suivi par requêtes courtes."""
+    _check(key)
+    return jobs.run(json.loads(payload).get("job"), _replace_gpu, clip, ref, payload, key, progress)
+
+
+@gpu(duration=_duration, size="large")
+def _replace_gpu(clip: str, ref: str, payload: str, key: str, progress=gr.Progress()) -> tuple[str, str, str]:
     global REPORT
     _check(key)
     t0 = time.time()
     data = json.loads(payload)
+    job = data.get("job")
+    jobs.check_cancel(job)
+    jobs.write(job, state="running", done=0, total=1000, desc="préparation")
     resolution = data.get("resolution", "360p")
     if resolution not in RESOLUTIONS:
         raise gr.Error(f"Résolution inconnue : {resolution}")
-    steps, seed = int(data.get("steps", 6)), int(data.get("seed", 42))
+    steps, seed = int(data.get("steps", distill.STEPS)), int(data.get("seed", 42))
+    _prepare_model(relight=bool(data.get("relight", False)))
     # Zone régénérée : rectangle autour de la personne (1×1, officiel) ou grille qui suit sa silhouette (plusieurs
     # personnes à l'écran : ne pas empiéter sur la voisine, déjà remplacée ou à garder).
     w_len, h_len = (int(v) for v in (data.get("mask_grid") or [1, 1]))
@@ -333,7 +402,7 @@ def replace(clip: str, ref: str, payload: str, key: str, progress=gr.Progress())
         raise gr.Error("Extrait trop long pour le niveau 4 (10 s maximum).")
     h, w = frames[0].shape[:2]
     clips = math.ceil((MODEL.get_valid_len(len(frames), CFG.frame_num, overlap=1) - 1) / (CFG.frame_num - 1))
-    report = REPORT = Report(progress, len(frames), clips * steps)
+    report = REPORT = Report(progress, len(frames), clips * steps, job)
     anchor = min(len(frames) - 1, round(float(data["t"]) * FPS))
     x1, y1, x2, y2 = data["box"]
     face_box = (x1 * w, y1 * h, x2 * w, y2 * h)
@@ -378,7 +447,7 @@ def replace(clip: str, ref: str, payload: str, key: str, progress=gr.Progress())
     gc.collect()
     torch.cuda.empty_cache()
 
-    # 3. Génération : la personne de la photo, à la place, avec la lumière de la scène.
+    # 3. Génération : la personne de la photo, à la place (modèle distillé ; lumière de la scène si demandé).
     video = MODEL.generate(str(work), replace_flag=True, clip_len=CFG.frame_num, refert_num=1, shift=CFG.sample_shift,
                            sample_solver="dpm++", sampling_steps=steps, guide_scale=1.0, seed=seed, offload_model=False)
     REPORT = None
@@ -392,6 +461,7 @@ def replace(clip: str, ref: str, payload: str, key: str, progress=gr.Progress())
         warnings.append(f"Personne non détectée sur {len(frames) - seen}/{len(frames)} images : "
                         "sa dernière position connue a été gardée (occultation, sortie du cadre).")
     stats = {"frames": len(out), "fps": FPS, "width": w, "height": h, "resolution": resolution, "steps": steps,
+             "blocks": clips, "relight": bool(data.get("relight", False)), "distilled": True,
              "warnings": warnings, "gpu_seconds": round(time.time() - t0, 1)}
     return str(result), str(mask_path), json.dumps(stats)
 
@@ -407,9 +477,14 @@ with gr.Blocks(title="Faceswap Studio · Niveau 4") as demo:
     video_out = gr.File(visible=False)
     mask_out = gr.File(visible=False)
     stats_out = gr.Textbox(visible=False)
+    job_in = gr.Textbox(visible=False)
+    status_out = gr.Textbox(visible=False)
     gr.Button(visible=False).click(health, [key_in], [health_out], api_name="health")
     gr.Button(visible=False).click(replace, [clip_in, ref_in, payload_in, key_in], [video_out, mask_out, stats_out],
                                    api_name="replace")
+    # Hors file d'attente : répondent tout de suite, même pendant un calcul (/gradio_api/run/status).
+    gr.Button(visible=False).click(status, [job_in, key_in], [status_out], api_name="status", queue=False)
+    gr.Button(visible=False).click(cancel, [job_in, key_in], [status_out], api_name="cancel", queue=False)
 
 demo.queue(default_concurrency_limit=1)
 

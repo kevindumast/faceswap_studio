@@ -71,6 +71,9 @@ class JobIn(BaseModel):
     level: Literal["face", "face_tone", "head", "character"] = "face"
     use_gpu: bool = False         # jamais implicite : CPU sauf case cochée par l'utilisateur
     resolution: Literal["360p", "480p"] = "360p"  # niveau 4 uniquement
+    steps: int | None = Field(default=None, ge=2, le=20)  # niveau 4 : étapes de génération (4 = modèle distillé)
+    relight: bool = False         # niveau 4 : la personne prend la lumière du décor (sinon : les couleurs de sa photo)
+    face_pass: bool = True        # niveau 4 : visage refait net sur ce PC après la génération
     limit_fps: bool = False       # vidéos > render.fps_cap i/s : une image sur N (60 → 30)
     restore: bool = False         # option « netteté » (niveaux 1 et 2 uniquement) : voir src/restore.py
     review: bool = False          # rendu sur ce PC : arrêt avant l'assemblage si des visages sont mal suivis
@@ -130,7 +133,9 @@ def public(job: dict) -> dict:
     return {
         "id": job["id"],
         "video_id": job["video_id"],
-        "video_title": video["title"] if video else None,
+        # Titre aussi gardé dans le rendu : il reste lisible si la vidéo source a été supprimée.
+        "video_title": video["title"] if video else params.get("video_title"),
+        "video_missing": video is None,
         "face_set_id": job["face_set_id"],
         "params": params,
         "status": job["status"],
@@ -192,7 +197,7 @@ def create_job(body: JobIn) -> dict:
 
     freeze(body.face_set_id)   # les personnes de ce rendu ne changeront plus (voir routes_faces)
     job_id = db.new_id()
-    params = body.model_dump(exclude={"video_id", "face_set_id", "consent"})
+    params = body.model_dump(exclude={"video_id", "face_set_id", "consent"}) | {"video_title": video["title"]}
     db.insert("jobs", id=job_id, video_id=body.video_id, face_set_id=body.face_set_id, params=params,
               status="queued", total=round(length * output_fps(video["info"], body.limit_fps)), created_at=time.time())
     return public(db.get("jobs", job_id))

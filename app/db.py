@@ -5,7 +5,6 @@ L'API et le worker sont deux process ; ils ne communiquent que par cette base.
 from __future__ import annotations
 
 import json
-import shutil
 import sqlite3
 import time
 import uuid
@@ -128,6 +127,11 @@ def all_rows(table: str, limit: int = 50) -> list[dict]:
     return [_row(r) for r in rows]
 
 
+def jobs_using_video(video_id: str) -> int:
+    with connect() as c:
+        return c.execute("SELECT COUNT(*) AS n FROM jobs WHERE video_id = ?", (video_id,)).fetchone()["n"]
+
+
 def delete(table: str, obj_id: str) -> None:
     with connect() as c:
         c.execute(f"DELETE FROM {table} WHERE id = ?", (obj_id,))
@@ -180,27 +184,3 @@ def get_meta(key: str) -> str | None:
     with connect() as c:
         row = c.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
     return row["value"] if row else None
-
-
-def cleanup(retention_hours: float) -> int:
-    """Supprime vidéos, visages et jobs plus vieux que la rétention (fichiers + lignes)."""
-    limit = time.time() - retention_hours * 3600
-    removed = 0
-    with connect() as c:
-        old_videos = [r["id"] for r in c.execute("SELECT id FROM videos WHERE created_at < ?", (limit,))]
-        old_jobs = [r["id"] for r in c.execute(
-            "SELECT id FROM jobs WHERE created_at < ? AND status NOT IN ('queued', 'running', 'pausing', 'paused', 'review')", (limit,))]
-        c.execute("DELETE FROM videos WHERE created_at < ?", (limit,))
-        c.execute("DELETE FROM jobs WHERE created_at < ? AND status NOT IN ('queued', 'running', 'pausing', 'paused', 'review')", (limit,))
-        kept_sets = {r["face_set_id"] for r in c.execute("SELECT face_set_id FROM jobs")}   # personnes des rendus gardés
-    for kind, ids in (("videos", old_videos), ("jobs", old_jobs)):
-        for obj_id in ids:
-            shutil.rmtree(folder(kind, obj_id), ignore_errors=True)
-            removed += 1
-    faces_root = data_dir() / "faces"
-    if faces_root.is_dir():
-        for d in faces_root.iterdir():
-            if d.is_dir() and d.name not in kept_sets and d.stat().st_mtime < limit:
-                shutil.rmtree(d, ignore_errors=True)
-                removed += 1
-    return removed

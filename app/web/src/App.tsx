@@ -68,12 +68,12 @@ export default function App() {
     retry: false,
   });
 
-  // Vidéo disparue (nettoyage auto) : retour à l'étape 1.
+  // Vidéo supprimée depuis l'accueil : retour à l'étape 1.
   useEffect(() => {
     if (video.error) setS(EMPTY);
   }, [video.error]);
 
-  const min = status.data?.segment.min_s ?? 5;
+  const min = status.data?.segment.min_s ?? 0.5;
   // Niveau mémorisé mais plus proposé (ex. session d'une autre version) : retour au niveau 1.
   const level: Level = status.data && !status.data.levels[s.level]?.available ? "face" : s.level;
   const ready = video.data?.status === "ready" ? video.data : null;

@@ -59,6 +59,7 @@ def public(video: dict) -> dict:
         "proxy_url": f"{base}/proxy.mp4" if ready else None,
         "filmstrip_url": f"{base}/filmstrip.jpg" if ready else None,
         "poster_url": f"{base}/poster.jpg" if ready else None,
+        "renders": db.jobs_using_video(video["id"]),   # rendus de l'historique faits sur cette vidéo
         "created_at": video["created_at"],
     }
 
@@ -110,7 +111,7 @@ def download_then_prepare(video_id: str, url: str) -> None:
 
 @router.get("")
 def list_videos() -> list[dict]:
-    return [public(v) for v in db.all_rows("videos", 20)]
+    return [public(v) for v in db.all_rows("videos", 100)]
 
 
 @router.post("/upload")

@@ -61,11 +61,46 @@ def test_gpu_option_accepted_only_when_configured(client, ready_video, make_sess
     ("Could not fetch config for https://kevin-x.hf.space: 404 Not Found", "Space introuvable"),
     ("GPU task aborted", "coupé avant la fin"),
     ("The requested GPU duration (340s) is larger than the maximum allowed", "refuse de réserver 340 s"),
+    ("You have exceeded your free ZeroGPU quota (204s requested vs. 95s left). Try again in 2:14:05.",
+     "ce rendu réserve 204 s de GPU, il en reste 95 s (5 min/jour en gratuit, 40 en PRO). Réessaie dans 2 h 14"),
+    ("You have exceeded your free ZeroGPU quota (204s requested vs. 95s left). Try again in 0:07:30.", "Réessaie dans 7 min"),
 ])
 def test_friendly_errors(raw, expected):
     from app.worker.zerogpu_client import friendly
 
     assert expected in friendly(RuntimeError(raw))
+
+
+def test_retry_time_is_given_as_a_clock_time():
+    from datetime import datetime
+
+    from app.worker.zerogpu_client import clock_text, retry_text
+
+    now = datetime(2026, 9, 29, 22, 51).timestamp()
+    assert retry_text(19 * 3600 + 29 * 60 + 10, now) == "dans 19 h 29 (demain vers 18 h 20)"
+    assert retry_text(450, now) == "dans 7 min (vers 22 h 58)"
+    assert clock_text(datetime(2026, 10, 2, 9, 5).timestamp(), now) == "le 02/10 vers 9 h 05"
+
+
+def test_quota_refusal_is_remembered_until_the_retry_time(client):
+    from app import db
+    from app.worker import zerogpu_client as zg
+
+    db.set_meta("zerogpu_quota", "")
+    assert zg.quota_status() is None and client.get("/api/status").json()["gpu"]["quota"] is None
+    err = zg.space_error(RuntimeError("You have exceeded your free ZeroGPU quota (88s requested vs. 21s left). "
+                                      "Try again in 19:29:10. Subscribe to Hugging Face PRO…"))
+    assert "il en reste 21 s" in str(err) and "Réessaie dans 19 h 29" in str(err)
+    q = client.get("/api/status").json()["gpu"]["quota"]
+    assert q["left_s"] == 21 and q["retry_at"] == pytest.approx(time.time() + 70150, abs=5)
+    zg.consume_quota(15.4)                                               # calcul réussi entre-temps
+    assert zg.quota_status()["left_s"] == 6
+    zg.space_error(RuntimeError("Clé APP_KEY invalide."))                 # autre erreur : rien ne change
+    assert zg.quota_status()["left_s"] == 6
+    q["retry_at"] = time.time() - 1                                       # heure passée : quota revenu
+    db.set_meta("zerogpu_quota", json.dumps(q))
+    assert zg.quota_status() is None
+    db.set_meta("zerogpu_quota", "")
 
 
 def test_friendly_error_without_text_names_its_type():
@@ -159,3 +194,32 @@ def test_client_swap_cancel(monkeypatch, tmp_path):
     with pytest.raises(RemoteCancelled):
         ZeroGPUClient("kevin/x", "tok", "key").swap(tmp_path / "c.mp4", {}, tmp_path / "o.mp4", should_cancel=lambda: True, poll=0)
     assert job.cancelled
+
+
+def test_pro_account_is_detected_and_raises_the_daily_quota(client, monkeypatch):
+    import huggingface_hub
+
+    from app import db
+    from app.worker import zerogpu_client as zg
+
+    calls = []
+
+    class FakeApi:
+        def __init__(self, token=None):
+            pass
+
+        def whoami(self):
+            calls.append(1)
+            return {"name": "kevin", "isPro": True}
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", FakeApi)
+    db.set_meta("zerogpu_pro", "")
+    client.put("/api/settings/zerogpu", json={"space": "kevin/faceswap-gpu", "token": "hf_x", "key": "k"})
+    assert zg.account_pro() is None and client.get("/api/status").json()["gpu"]["free_quota_s"] == 300
+    zg.refresh_pro()
+    zg.refresh_pro()                                                      # relu au plus une fois par heure
+    gpu = client.get("/api/status").json()["gpu"]
+    assert calls == [1] and gpu["pro"] is True and gpu["free_quota_s"] == 40 * 60
+    db.set_meta("zerogpu_pro", "")
+    client.delete("/api/settings/zerogpu")
+

@@ -41,14 +41,14 @@ def _unit(v):
 
 def test_status(client):
     s = client.get("/api/status").json()
-    assert s["segment"] == {"min_s": 5, "max_s": 60}
+    assert s["segment"] == {"min_s": 0.5, "max_s": 60}
 
 
 def test_segment_bounds(client, ready_video, make_session):
     rng = np.random.default_rng(0)
     fs, ids = make_session({"Kevin": [rng.normal(size=512)]})
     box = {"t": 1.0, "box": [0.1, 0.1, 0.3, 0.4], "person": ids["Kevin"]}
-    assert _job(client, ready_video, fs, 0, 4, [box]).status_code == 422      # trop court
+    assert _job(client, ready_video, fs, 0, 0.3, [box]).status_code == 422    # trop court (moins de 0,5 s)
     assert _job(client, ready_video, fs, 0, 9, [box]).status_code == 422      # dépasse la vidéo (8 s)
     assert _job(client, ready_video, fs, 0, 61, [box]).status_code == 422     # dépasse la limite de 60 s
     ok = _job(client, ready_video, fs, 1, 7, [box])
@@ -146,15 +146,6 @@ def test_rendered_session_is_frozen(client, ready_video, make_session):
     assert {p["id"] for p in client.get(f"/api/faces/{fs}").json()["persons"]} == set(ids.values())
     again = client.post(f"/api/faces/{edited['id']}/people", json={"person_id": ids["Pote"]}).json()
     assert again["id"] == edited["id"]                                      # la copie, elle, reste modifiable
-
-
-def test_library_survives_cleanup(make_session):
-    from app import db, library
-
-    set_id, ids = make_session({"Kevin": [np.random.default_rng(5).normal(size=512)]})
-    db.cleanup(-1)                      # tout ce qui est « plus vieux que dans 1 h » : toutes les sessions
-    assert not db.folder("faces", set_id).exists()
-    assert library.exists(ids["Kevin"])
 
 
 def test_legacy_session_is_imported(make_session):
