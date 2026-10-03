@@ -74,12 +74,51 @@ def test_framing_categories():
 
 
 def test_gpu_estimate_matches_the_space():
-    from src.character import gpu_seconds
+    from src.character import blocks, gpu_seconds, measured_block_step
 
-    assert gpu_seconds(5, "360p", 6) == pytest.approx(105)
-    assert gpu_seconds(5, "480p", 6) > gpu_seconds(5, "360p", 6) * 1.5
+    assert [blocks(s) for s in (0.5, 2.5, 2.6, 5.0, 5.1, 7.6, 10.0)] == [1, 1, 2, 2, 2, 3, 4]   # blocs de 77 images
+    assert gpu_seconds(5, "360p", 6) == pytest.approx(232)             # le rendu mesuré (5 s, 360p, 6 étapes)
+    assert measured_block_step(232, 5, 6) == pytest.approx(16)
+    assert gpu_seconds(3, "360p", 4) - 6 * 3 == gpu_seconds(5, "360p", 4) - 6 * 5   # 3 s et 5 s : mêmes 2 blocs
+    assert gpu_seconds(5, "360p", 4, {"360p": 20}) == pytest.approx(10 + 30 + 2 * 4 * 20)
     space = (ROOT / "space_character" / "app.py").read_text(encoding="utf-8")
-    assert 'per_s = {"360p": 12.0, "480p": 26.0}' in space and "return 45 + seconds * per_s * steps / 6" in space
+    assert 'per_block_step = {"360p": 16.0, "480p": 36.0}' in space
+    assert "return 10 + 6 * seconds + blocks(seconds) * steps * per_block_step" in space
+    assert "return max(1, math.ceil((max(1, round(seconds * FPS)) - 1) / BLOCK_FRAMES))" in space
+
+
+def test_recompose_matches_the_background_color(tmp_path):
+    """La zone refaite a un décor un peu plus clair : recollée telle quelle, un rectangle se voit ; corrigée, non."""
+    from src import media
+    from src.character import recompose
+
+    w, h = 320, 180
+    background = np.zeros((h, w, 3), np.uint8)
+    background[:] = (20, 110, 230)                       # orange (BGR)
+    generated = background.copy()
+    generated[:] = (35, 125, 245)                         # décor régénéré : +15 sur chaque canal
+    generated[60:140, 140:180] = (200, 200, 200)          # la personne, au milieu de la zone
+    zone = np.zeros((h, w, 3), np.uint8)
+    zone[30:170, 100:220] = 255
+    for name, img in (("orig.mp4", background), ("gen.mp4", generated), ("mask.mp4", zone)):
+        with media.FrameWriter(tmp_path / name, (w, h), "10", 12, "veryfast") as writer:
+            for _ in range(10):
+                writer.write(img)
+
+    def inside_vs_outside(match_color: bool) -> float:
+        out = tmp_path / f"out_{match_color}.mp4"
+        recompose(tmp_path / "gen.mp4", tmp_path / "mask.mp4", tmp_path / "orig.mp4", out, "10", 12, "veryfast",
+                  match_color=match_color)
+        cap = cv2.VideoCapture(str(out))
+        for _ in range(9):
+            ok, frame = cap.read()
+        cap.release()
+        decor_inside = frame[40:55, 110:130].astype(float).mean()     # décor dans la zone refaite
+        decor_outside = frame[40:55, 40:60].astype(float).mean()      # décor d'origine
+        return abs(decor_inside - decor_outside)
+
+    assert inside_vs_outside(match_color=False) > 10
+    assert inside_vs_outside(match_color=True) < 3
 
 
 # --- Recollage sur l'extrait d'origine ----------------------------------------------------------------------------
@@ -184,7 +223,13 @@ def test_level4_rules(client, ready_video, make_session, monkeypatch):
     assert r.status_code == 200
     job = r.json()
     assert job["params"]["level"] == "character" and job["params"]["resolution"] == "480p" and job["pausable"] is False
+    assert (job["params"]["steps"], job["params"]["relight"], job["params"]["face_pass"]) == (None, False, True)
     client.post(f"/api/jobs/{job['id']}/cancel")
+    r = client.post("/api/jobs", json={**one, "steps": 8, "relight": True, "face_pass": False})
+    assert r.status_code == 200
+    assert (r.json()["params"]["steps"], r.json()["params"]["relight"], r.json()["params"]["face_pass"]) == (8, True, False)
+    client.post(f"/api/jobs/{r.json()['id']}/cancel")
+    assert client.post("/api/jobs", json={**one, "steps": 50}).status_code == 422
     client.delete("/api/settings/zerogpu")
 
 
@@ -255,6 +300,13 @@ def test_worker_level4_end_to_end_with_fake_space(sample_video, tmp_path, monkey
 
     monkeypatch.setattr(worker, "wait_until_ready", fake_wait)
     monkeypatch.setattr(worker, "choose_reference", lambda photos: Reference(photos[0], 0.4))   # portrait seulement
+    faced = []
+
+    def fake_face_pass(video, mappings, out, progress, restore):
+        faced.append((video.name, video.is_file(), mappings[0].target["t"], restore))
+        return ["visage refait"]
+
+    monkeypatch.setattr(worker, "face_pass", fake_face_pass)
     person = PersonAssets(source=SourceFace(np.ones(512, np.float32) / np.sqrt(512)), photos=[photo])
     mapping = FaceMapping(person, target={"t": 3.0, "box": [0.4, 0.1, 0.6, 0.4]}, label="Visage 1")
     opts = RenderOptions(start=1.0, end=7.0, output="segment", stabilize=True, ai_label=True, level="character")
@@ -264,6 +316,8 @@ def test_worker_level4_end_to_end_with_fake_space(sample_video, tmp_path, monkey
     stats = worker.run_character(job, sample_video, opts, [mapping], out, lambda *a: progress.append(a))
 
     assert sent["payload"]["t"] == pytest.approx(2.0) and sent["payload"]["resolution"] == "360p"
+    assert sent["payload"]["steps"] == 4 and sent["payload"]["relight"] is False   # distillé, couleurs de la photo
+    assert faced == [("swapped.mp4", True, pytest.approx(2.0), True)] and "visage refait" in stats.warnings
     assert sent["payload"]["mask_grid"] == [1, 1]                                  # seul : rectangle officiel
     assert not sent["clip"].has_audio and sent["reference"] == photo
     result = media.probe(out / "result.mp4")
@@ -428,3 +482,21 @@ def test_reference_photo_chosen_by_hand(client, make_session):
     assert library.assets(pid, "character").reference is None
     client.put(f"/api/people/{pid}/reference", json={"photo_id": photos[0]})
     assert client.put(f"/api/people/{pid}/reference", json={"photo_id": None}).json()["manual"] is False
+
+
+def test_face_pass_keeps_the_generated_video_when_no_face_is_found(tmp_path, monkeypatch):
+    from app.worker import main as worker
+    from src import models, pipeline
+
+    video = tmp_path / "swapped.mp4"
+    video.write_bytes(b"genere")
+    monkeypatch.setattr(models, "is_ready", lambda group: True)
+
+    def no_face(*a, **k):
+        raise pipeline.RenderError("Aucun des visages choisis n'a été retrouvé dans la vidéo.")
+
+    monkeypatch.setattr(pipeline, "swap_segment", no_face)
+    warnings = worker.face_pass(video, [], tmp_path, lambda *a: None, restore=True)
+    assert video.read_bytes() == b"genere" and "Visage non retouché" in warnings[0]
+    monkeypatch.setattr(models, "is_ready", lambda group: group != "base")
+    assert "modèles du niveau 1" in worker.face_pass(video, [], tmp_path, lambda *a: None, restore=True)[0]

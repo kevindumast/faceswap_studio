@@ -196,7 +196,7 @@ export function Timeline(p: Props) {
             warn ? "bg-warn text-accent-ink" : "bg-accent text-accent-ink",
           )}
         >
-          {warn ? (p.limitHit === "max" ? `Max ${p.max} s` : `Min ${p.min} s`) : seconds(len)}
+          {warn ? (p.limitHit === "max" ? `Max ${p.max} s` : `Min ${String(p.min).replace(".", ",")} s`) : seconds(len)}
           <span className="opacity-60">·</span>
           {Math.round(len * p.fps)} img
         </div>

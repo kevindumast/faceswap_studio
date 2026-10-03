@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
-import { Check, Copy, Cpu, ExternalLink, Loader2, PersonStanding, PlugZap, Trash2, X, Zap } from "lucide-react";
+import { AlarmClock, Check, Copy, Cpu, ExternalLink, Loader2, PersonStanding, PlugZap, Trash2, X, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, type Status } from "../lib/api";
-import { duration } from "../lib/time";
+import { clockAt, duration } from "../lib/time";
 import { SpaceLive } from "./SpaceStatus";
 import { Button, Notice, ProgressBar, cx } from "./ui";
 
@@ -62,8 +62,10 @@ export function EngineSettings({ open, onClose, status }: { open: boolean; onClo
   const testCharacter = useMutation({ mutationFn: () => api.testZeroGPU("character"), onSettled: () => qc.invalidateQueries({ queryKey: ["settings"] }) });
 
   const engine = status?.engine;
-  const used = status?.gpu.used_today_s ?? 0;
   const quota = status?.gpu.free_quota_s ?? 300;
+  // Chiffre exact donné par ZeroGPU à son dernier refus (jusqu'à l'heure du prochain essai), sinon estimation locale.
+  const known = status?.gpu.quota;
+  const used = known?.left_s != null ? Math.max(0, quota - known.left_s) : (status?.gpu.used_today_s ?? 0);
 
   return (
     <AnimatePresence>
@@ -126,19 +128,29 @@ export function EngineSettings({ open, onClose, status }: { open: boolean; onClo
                   )}
                 </div>
                 <p className="text-[13px] text-muted">
-                  Ton propre Space privé sur Hugging Face : GPU de 48 Go, quota de {Math.round(quota / 60)} min/jour en gratuit (40 en PRO). Indispensable
+                  Ton propre Space privé sur Hugging Face : GPU de 48 Go, quota de {Math.round(quota / 60)} min/jour
+                  {status?.gpu.pro ? " (compte PRO)" : " en gratuit (40 en PRO)"}. Indispensable
                   pour le niveau 4. Le brancher n'active rien : la case reste à cocher à chaque rendu.
                 </p>
 
                 {z?.configured && (
                   <div>
                     <div className="mb-1.5 flex justify-between text-[12px] text-muted">
-                      <span>Quota utilisé aujourd'hui (estimation locale)</span>
+                      <span>{known ? "Quota utilisé (d'après ZeroGPU)" : "Quota utilisé aujourd'hui (estimation locale)"}</span>
                       <span className="font-mono tabular">
                         {duration(used)} / {duration(quota)}
                       </span>
                     </div>
                     <ProgressBar value={used / quota} tone={used > quota * 0.8 ? "warn" : "accent"} />
+                    {known && (
+                      <p className="mt-1.5 flex items-center gap-1.5 text-[12px] text-muted">
+                        <AlarmClock className="size-3.5 shrink-0 text-warn" />
+                        <span>
+                          {known.left_s != null && <>Il reste {duration(known.left_s)}. </>}
+                          Prochain essai possible <span className="text-fg">{clockAt(known.retry_at)}</span>, d'après ZeroGPU.
+                        </span>
+                      </p>
+                    )}
                   </div>
                 )}
 

@@ -53,6 +53,7 @@ except ImportError:  # en local : décorateur sans effet
             return args[0]
         return lambda fn: fn
 
+import jobs  # noqa: E402
 from src import media, models  # noqa: E402
 from src.identity import SourceFace  # noqa: E402
 from src.levels import FACE, FACE_TONE, PersonAssets  # noqa: E402
@@ -76,6 +77,19 @@ def health(key: str) -> str:
     return json.dumps({"version": VERSION, "levels": LEVELS, "zerogpu": bool(os.environ.get("SPACE_ID"))})
 
 
+def status(job: str, key: str) -> str:
+    """État d'un calcul lancé par /call/swap (requête courte, hors file d'attente)."""
+    _check(key)
+    return json.dumps(jobs.read(job))
+
+
+def cancel(job: str, key: str) -> str:
+    """Demande l'arrêt d'un calcul : il s'arrête à sa prochaine image et libère le GPU."""
+    _check(key)
+    jobs.request_cancel(job)
+    return "ok"
+
+
 def _duration(clip: str, payload: str, key: str, progress=None) -> int:
     """Durée de GPU réservée (secondes) : proportionnelle au nombre d'images et de visages, bornée."""
     try:
@@ -87,10 +101,19 @@ def _duration(clip: str, payload: str, key: str, progress=None) -> int:
     return int(min(600, 45 + frames * 0.08 * faces))
 
 
-@gpu(duration=_duration)
 def swap(clip: str, payload: str, key: str, progress=gr.Progress()) -> tuple[str, str]:
+    """Point d'entrée /swap : calcul GPU, avec son état tenu à jour pour le suivi par requêtes courtes."""
+    _check(key)
+    return jobs.run(json.loads(payload).get("job"), _swap_gpu, clip, payload, key, progress)
+
+
+@gpu(duration=_duration)
+def _swap_gpu(clip: str, payload: str, key: str, progress=gr.Progress()) -> tuple[str, str]:
     _check(key)
     data = json.loads(payload)
+    job = data.get("job")
+    jobs.check_cancel(job)
+    jobs.write(job, state="running", done=0, total=0, desc="préparation")
     if data.get("level") not in LEVELS:
         raise gr.Error(f"Niveau non disponible sur ce Space : {data.get('level')}")
     people = {
@@ -106,6 +129,7 @@ def swap(clip: str, payload: str, key: str, progress=gr.Progress()) -> tuple[str
     t0 = time.time()
 
     def report(stage: str, done: int, total: int) -> None:
+        jobs.progress(job, done, total, stage)
         progress((done, total), desc=stage, unit="images")
 
     stats = swap_segment(Path(clip), mappings, data["level"], out, stabilize=bool(data.get("stabilize", True)),
@@ -125,6 +149,11 @@ with gr.Blocks(title="Faceswap Studio · GPU") as demo:
     stats_out = gr.Textbox(visible=False)
     gr.Button(visible=False).click(health, [key_in], [health_out], api_name="health")
     gr.Button(visible=False).click(swap, [clip_in, payload_in, key_in], [clip_out, stats_out], api_name="swap")
+    job_in = gr.Textbox(visible=False)
+    status_out = gr.Textbox(visible=False)
+    # Hors file d'attente : répondent tout de suite, même pendant un calcul (/gradio_api/run/status).
+    gr.Button(visible=False).click(status, [job_in, key_in], [status_out], api_name="status", queue=False)
+    gr.Button(visible=False).click(cancel, [job_in, key_in], [status_out], api_name="cancel", queue=False)
 
 demo.queue(default_concurrency_limit=1)
 

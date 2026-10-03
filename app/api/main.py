@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import db
+from app.worker.zerogpu_client import account_pro, quota_status
 from src import media
 from src.config import ROOT, load_config
 from src.hardware import engine_status
@@ -22,7 +23,6 @@ WEB_DIST = ROOT / "app" / "web" / "dist"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    cfg = load_config()
     db.init()
     # Préparations interrompues par un redémarrage : on les marque en erreur plutôt que de les laisser tourner à vide.
     for v in db.all_rows("videos", 500):
@@ -31,7 +31,7 @@ async def lifespan(_: FastAPI):
     for group in routes_models.GROUP_MB:  # téléchargements de modèles interrompus
         if db.get_meta(f"download:{group}"):
             db.set_meta(f"download:{group}", "")
-    db.cleanup(float(cfg.retention_hours))
+    # Aucun nettoyage automatique : vidéos, rendus et visages restent jusqu'à ce que l'utilisateur les supprime.
     yield
 
 
@@ -54,6 +54,7 @@ def status() -> dict:
     except media.MediaError:
         ffmpeg_ok = False
     heartbeat = float(db.get_meta("worker_heartbeat") or 0)
+    pro = account_pro()
     engine = engine_status()
     return {
         "device": engine["accelerator"],
@@ -74,7 +75,11 @@ def status() -> dict:
             "configured": routes_jobs.gpu_configured(),
             "space": db.get_meta("zerogpu_space") or None,
             "used_today_s": round(float(db.get_meta(f"zerogpu_used:{time.strftime('%Y-%m-%d')}") or 0)),
-            "free_quota_s": int(cfg.get("zerogpu", {}).get("free_quota_min", 5)) * 60,
+            # Quota quotidien du compte : 40 min en PRO (détecté avec le jeton), sinon 5 min.
+            "pro": pro,
+            "free_quota_s": int(cfg.get("zerogpu", {}).get("pro_quota_min" if pro else "free_quota_min", 40 if pro else 5)) * 60,
+            # Dernier refus de ZeroGPU encore valable : reste exact et heure du prochain essai (None : rien de connu).
+            "quota": quota_status(),
             "sec_per_frame": {lvl: routes_models.sec_per_frame(lvl, "zerogpu") for lvl in ("face", "face_tone")},
             "character": routes_models.character_status(),
         },

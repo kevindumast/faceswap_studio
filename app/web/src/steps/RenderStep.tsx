@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { ApiError, api, type Job, type JobParams, type Level, type Mapping, type Resolution, type Status, type Video } from "../lib/api";
 import { levelInfo } from "../lib/levels";
 import { faceIndex, styleOf } from "../lib/people";
-import { cappedFps, duration, renderSpeed, seconds, timecode } from "../lib/time";
+import { cappedFps, clockAt, duration, renderSpeed, seconds, timecode } from "../lib/time";
 import { Button, Card, Notice, ProgressBar, SectionTitle, SegmentedControl, Switch, cx } from "../components/ui";
 import { Compare } from "../components/Compare";
 import { openEngineSettings } from "../components/EngineSettings";
@@ -115,7 +115,13 @@ function Setup(p: Props) {
   // Niveau 4 : son propre Space (Wan2.2-Animate), 1 ou 2 personnes (un passage chacune), durée limitée, résolution au choix.
   const isCharacter = p.level === "character";
   const character = p.status?.gpu.character;
-  const [resolution, setResolution] = useState<Resolution>("360p");
+  // 480p par défaut (compte PRO : 40 min/jour) ; 360p si le compte est gratuit (5 min/jour).
+  const [resolution, setResolution] = useState<Resolution>(() => (p.status?.gpu.pro === false ? "360p" : "480p"));
+  const [steps, setSteps] = useState(() => character?.steps ?? 4);
+  // Lumière du décor sur la personne : plus intégrée, mais elle change ses couleurs (tout orange sur fond orange).
+  const [relight, setRelight] = useState(false);
+  // Visage refait net sur ce PC après la génération (Wan le génère en quelques dizaines de pixels).
+  const [facePass, setFacePass] = useState(true);
   const maxCharacter = character?.max_s ?? 10;
   const tooLong = isCharacter && len > maxCharacter + 0.01;
   const maxPeople = character?.max_people ?? 2;
@@ -128,18 +134,24 @@ function Setup(p: Props) {
   const fullExtra = p.video.info!.duration * 0.25;
   // ZeroGPU : temps GPU (= quota) par image, + envoi, file d'attente et réveil éventuel du Space.
   const gpuSpf = p.status?.gpu.sec_per_frame?.[p.level] ?? 0.1;
-  const characterPerS = character?.gpu_s_per_second[resolution] ?? (resolution === "480p" ? 26 : 12);
-  const characterSteps = character?.steps ?? 6;
+  const perBlockStep = character?.gpu_s_per_block_step[resolution] ?? (resolution === "480p" ? 36 : 16);
+  const characterBlocks = blocksOf(len);
   // Niveau 4 : un passage GPU par personne remplacée, l'un après l'autre.
-  const characterPass = characterGpuSeconds(len, characterPerS, characterSteps);
+  const characterPass = characterGpuSeconds(len, perBlockStep, steps);
   const gpuSeconds = isCharacter ? characterPass * people : frames * gpuSpf * swapFactor;
-  // Le Space du niveau 4 réserve 30 % de plus que l'estimation (marge), et ZeroGPU multiplie encore par 1,5 (cartes
+  // Le Space du niveau 4 réserve 15 % de plus que l'estimation (marge), et ZeroGPU multiplie encore par 1,5 (cartes
   // Blackwell : 227 s demandés → 340 s refusés) : il refuse d'emblée une réservation plus grande que le quota restant.
   // Les passages s'enchaînent : seule la réservation du dernier compte en plus.
-  const gpuReserved = isCharacter ? gpuSeconds + characterPass * (1.3 * 1.5 - 1) : gpuSeconds;
-  const quotaLeft = (p.status?.gpu.free_quota_s ?? 300) - (p.status?.gpu.used_today_s ?? 0);
+  const gpuReserved = isCharacter ? gpuSeconds + characterPass * (1.15 * 1.5 - 1) : gpuSeconds;
+  // Visage net sur ce PC : même vitesse que le niveau 1 mesurée ici, pour chaque personne.
+  const facePassSeconds = isCharacter && facePass ? frames * (p.status?.levels.face?.sec_per_frame ?? 1.5) * swapFactor : 0;
+  // Reste exact donné par ZeroGPU à son dernier refus (jusqu'à l'heure du prochain essai), sinon estimation locale.
+  const knownQuota = p.status?.gpu.quota ?? null;
+  const quotaLeft = knownQuota?.left_s != null
+    ? knownQuota.left_s
+    : (p.status?.gpu.free_quota_s ?? 300) - (p.status?.gpu.used_today_s ?? 0);
   const estimate = useGpu
-    ? gpuSeconds + (isCharacter ? 90 : 60) + (output === "full" ? fullExtra : 0)
+    ? gpuSeconds + (isCharacter ? 90 + facePassSeconds : 60) + (output === "full" ? fullExtra : 0)
     : frames * spf * swapFactor + 15 + (output === "full" ? fullExtra : 0);
   const faceSet = useQuery({ queryKey: ["faceset", p.faceSetId], queryFn: () => api.faceSet(p.faceSetId) });
   // Même requête que l'étape Visages : la recherche du passage est déjà en cache.
@@ -163,7 +175,7 @@ function Setup(p: Props) {
         mappings: active.map(({ t, box, person }) => ({ t, box, person })),
         level: p.level,
         use_gpu: useGpu,
-        ...(isCharacter ? { resolution } : {}),
+        ...(isCharacter ? { resolution, steps, relight, face_pass: facePass } : {}),
         ...(isFaceLevel ? { restore } : {}),
         review: canReview && review,
         limit_fps: highFps && limitFps,
@@ -343,8 +355,37 @@ function Setup(p: Props) {
               />
               <p className="mt-2 text-[13px] text-muted">
                 La personne est générée en {resolution} puis recollée sur la vidéo : le reste de l'image garde sa netteté.
-                {resolution === "480p" ? " Environ deux fois plus de quota." : ""}
+                {resolution === "480p" ? " Environ 2,2× plus de quota qu'en 360p." : ""}
               </p>
+              <div className="mt-3 mb-1 text-[13px] font-medium">Étapes de génération</div>
+              <SegmentedControl
+                value={String(steps)}
+                onChange={(v) => setSteps(Number(v))}
+                className="w-full"
+                options={[
+                  { value: "4", label: "4 · rapide" },
+                  { value: "8", label: "8 · plus soigné" },
+                ]}
+              />
+              <p className="mt-2 text-[13px] text-muted">
+                Modèle distillé : 4 étapes donnent déjà une image proche des 20 étapes officielles. 8 affine les détails, pour 2× plus de quota.
+              </p>
+              <div className="mt-3 space-y-3">
+                <Switch
+                  checked={facePass}
+                  onChange={setFacePass}
+                  label="Visage net (sur ce PC)"
+                  description={`Après la génération, ton vrai visage est remis en pleine résolution, comme au niveau 1${
+                    restoreStatus?.ready ? ", avec la netteté" : ""
+                  } : ≈ ${duration(facePassSeconds || frames * (p.status?.levels.face?.sec_per_frame ?? 1.5) * swapFactor)} de plus, sans quota.`}
+                />
+                <Switch
+                  checked={relight}
+                  onChange={setRelight}
+                  label="Lumière de la scène"
+                  description="La personne prend l'éclairage du décor : plus intégrée, mais ses couleurs changent (tout vire à l'orange sur un fond orange). Décoché : les couleurs de ta photo."
+                />
+              </div>
               {tooLong && (
                 <Notice tone="warn" className="mt-3">
                   Le niveau 4 est limité à {seconds(maxCharacter)} (quota GPU) : raccourcis le passage ({seconds(len)} actuellement).
@@ -358,7 +399,7 @@ function Setup(p: Props) {
               {!badCount && active.length > 1 && (
                 <Notice tone="info" className="mt-3">
                   {active.length} personnes = {active.length} passages sur le GPU, l'un après l'autre : environ {active.length}× plus de quota et de temps
-                  qu'une seule. Ton quota gratuit (5 min/jour) suffit pour 5 s en 360p.
+                  qu'une seule.
                 </Notice>
               )}
             </div>
@@ -377,6 +418,8 @@ function Setup(p: Props) {
               quotaNeeded={gpuSeconds}
               quotaReserved={gpuReserved}
               quotaLeft={quotaLeft}
+              quotaBackAt={knownQuota?.retry_at}
+              pro={!!p.status?.gpu.pro}
               spaceLabel={isCharacter ? "le Space du niveau 4" : undefined}
             />
           )}
@@ -400,8 +443,9 @@ function Setup(p: Props) {
                 <div className="mt-0.5 font-mono text-[11px] text-faint tabular" title="Images du passage × secondes par image (mesurée sur ta machine) × visages remplacés">
                   {isCharacter ? (
                     <>
-                      {seconds(len)} × {Math.round(characterPerS)} s de GPU/s ({resolution}, {characterSteps} étapes)
+                      {characterBlocks} bloc{characterBlocks > 1 ? "s" : ""} × {steps} étapes × {Math.round(perBlockStep)} s ({resolution}) + préparation
                       {people > 1 ? ` × ${people} personnes` : ""} + ~1 min 30 d'envoi et de recollage
+                      {facePass ? ` + ${duration(facePassSeconds)} de visage sur ce PC` : ""}
                     </>
                   ) : (
                     <>
@@ -432,9 +476,14 @@ function Setup(p: Props) {
   );
 }
 
-/** Temps GPU du niveau 4 : même formule que le Space (45 s de préparation + par seconde d'extrait, pour 6 étapes). */
-function characterGpuSeconds(len: number, perSecond: number, steps: number): number {
-  return 45 + (len * perSecond * steps) / 6;
+/** Blocs de génération du niveau 4 : Wan-Animate travaille par blocs de 77 images à 30 i/s (dont 1 reprise). */
+function blocksOf(len: number): number {
+  return Math.max(1, Math.ceil((Math.max(1, Math.round(len * 30)) - 1) / 76));
+}
+
+/** Temps GPU d'un passage du niveau 4 : même formule que le Space (préparation + chaque étape de chaque bloc). */
+function characterGpuSeconds(len: number, perBlockStep: number, steps: number): number {
+  return 10 + 6 * len + blocksOf(len) * steps * perBlockStep;
 }
 
 /** Option GPU : décochée par défaut, grisée tant qu'aucun GPU n'est branché, jamais cochée à la place de l'utilisateur. */
@@ -446,6 +495,8 @@ function GpuOption({
   quotaNeeded,
   quotaReserved,
   quotaLeft,
+  quotaBackAt,
+  pro,
   spaceLabel,
 }: {
   checked: boolean;
@@ -456,6 +507,10 @@ function GpuOption({
   /** Temps réservé auprès de ZeroGPU (estimation + marge du Space) : c'est lui qui doit tenir dans le quota restant. */
   quotaReserved: number;
   quotaLeft: number;
+  /** Heure du prochain essai annoncée par ZeroGPU à son dernier refus (le reste est alors exact). */
+  quotaBackAt?: number;
+  /** Compte PRO : 40 min/jour au lieu de 5. */
+  pro: boolean;
   /** Space concerné, s'il n'est pas celui des niveaux 1-2 (ex. « le Space du niveau 4 »). */
   spaceLabel?: string;
 }) {
@@ -478,7 +533,9 @@ function GpuOption({
           <span className="mt-0.5 block text-[13px] text-muted">
             {configured ? (
               <>
-                ≈ {duration(quotaNeeded)} de GPU sur ton quota (il reste ≈ {duration(Math.max(0, quotaLeft))} aujourd'hui en gratuit). Décoché : calcul sur ce PC.
+                ≈ {duration(quotaNeeded)} de GPU sur ton quota (il reste{" "}
+                {quotaBackAt ? `${duration(Math.max(0, quotaLeft))} d'après ZeroGPU, prochain essai possible ${clockAt(quotaBackAt)}` : `≈ ${duration(Math.max(0, quotaLeft))} aujourd'hui${pro ? " en PRO" : " en gratuit"}`}).
+                Décoché : calcul sur ce PC.
               </>
             ) : spaceLabel ? (
               `Pas encore branché : ${spaceLabel} se crée en une commande (Moteur → Niveau 4).`
@@ -495,7 +552,8 @@ function GpuOption({
       </label>
       {configured && checked && quotaReserved > quotaLeft && (
         <Notice tone="warn" className="mt-3">
-          Ce rendu réserve ≈ {duration(quotaReserved)} de GPU, plus que le quota restant aujourd'hui : ZeroGPU le refusera au lancement.{" "}
+          Ce rendu réserve ≈ {duration(quotaReserved)} de GPU, plus que le quota restant (≈ {duration(Math.max(0, quotaLeft))}) : ZeroGPU le
+          refusera au lancement. {quotaBackAt && <>Prochain essai possible {clockAt(quotaBackAt)}. </>}
           {required ? "Raccourcis le passage ou passe en 360p." : "Raccourcis le passage ou décoche l'option."}
         </Notice>
       )}
@@ -540,6 +598,7 @@ const CHARACTER_STAGES: Stage[] = [
   { key: "pose", label: "Squelette et visage" },
   { key: "mask", label: "Silhouette" },
   { key: "generate", label: "Génération de la personne" },
+  { key: "face", label: "Visage net (sur ce PC)" },
   { key: "assemble", label: "Recollage + son" },
 ];
 
@@ -548,7 +607,7 @@ const REVIEWED_STAGES: Stage[] = [{ key: "assemble", label: "Assemblage + son" }
 
 function stagesOf(j: Job): Stage[] {
   if (j.params.review_step) return j.params.review_step === "fix" ? FIX_STAGES : REVIEWED_STAGES;
-  if (j.params.level === "character") return CHARACTER_STAGES;
+  if (j.params.level === "character") return CHARACTER_STAGES.filter((s) => s.key !== "face" || j.params.face_pass !== false);
   return j.params.use_gpu ? REMOTE_STAGES : STAGES;
 }
 
@@ -561,11 +620,11 @@ function overall(j: Job): number {
     case "cut":
       return 0.03;
     case "wake":
-      return pass > 1 ? 0.07 + 0.88 * before : 0.04;
+      return pass > 1 ? 0.07 + gpuShare(j) * before : 0.04;
     case "queue":
-      return pass > 1 ? 0.07 + 0.88 * before : 0.05;
+      return pass > 1 ? 0.07 + gpuShare(j) * before : 0.05;
     case "gpu":
-      return pass > 1 ? 0.07 + 0.88 * before : 0.06;
+      return pass > 1 ? 0.07 + gpuShare(j) * before : 0.06;
     case "swap":
       return j.params.use_gpu ? 0.07 + 0.88 * frac : 0.05 + 0.9 * frac;
     case "fix":
@@ -573,12 +632,19 @@ function overall(j: Job): number {
     case "pose":
     case "mask":
     case "generate":
-      return 0.07 + 0.88 * (before + frac / passes); // progression du Space niveau 4, en ‰
+      return 0.07 + gpuShare(j) * (before + frac / passes); // progression du Space niveau 4, en ‰
+    case "face":
+      return 0.07 + gpuShare(j) + (0.95 - 0.07 - gpuShare(j)) * frac;
     case "assemble":
       return 0.97;
     default:
       return 0;
   }
+}
+
+/** Part de la barre pour les passages sur le Space (niveau 4) : un peu moins s'il reste le visage à refaire sur ce PC. */
+function gpuShare(j: Job): number {
+  return j.params.level === "character" && j.params.face_pass !== false ? 0.7 : 0.88;
 }
 
 /** Secondes passées dans l'étape en cours (mesurées dans le navigateur, depuis le dernier changement d'étape). */
@@ -604,6 +670,7 @@ function stageDetail(j: Job, inStage: number): string | null {
       return chrono(inStage);
     case "swap":
     case "fix":
+    case "face":
       return `${j.done}/${j.total}`;
     case "pose":
     case "mask":
@@ -622,6 +689,7 @@ const REMOTE_HINT: Partial<Record<StageKey, string>> = {
   mask: "Calcul sur ZeroGPU : découpe de sa silhouette.",
   generate: "Calcul sur ZeroGPU : la personne de ta photo est générée à sa place.",
   swap: "Calcul sur ZeroGPU : remplacement des visages.",
+  face: "Sur ce PC, sans quota : ton vrai visage est remis net, en pleine résolution, sur la personne générée.",
 };
 
 /** Rendu en pause : ce qui est déjà calculé est gardé, la reprise repart à la même image. */
