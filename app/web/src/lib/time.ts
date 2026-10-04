@@ -34,6 +34,17 @@ export function duration(t: number): string {
   return s ? `${m} min ${String(s).padStart(2, "0")}` : `${m} min`;
 }
 
+/** Heure locale d'un instant à venir (s depuis 1970) : « vers 18 h 20 », « demain vers 18 h 20 », « le 02/10 vers 18 h 20 ». */
+export function clockAt(ts: number, now: Date = new Date()): string {
+  const at = new Date(ts * 1000);
+  const hm = `vers ${at.getHours()} h ${String(at.getMinutes()).padStart(2, "0")}`;
+  const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((day(at) - day(now)) / 86_400_000);
+  if (days <= 0) return hm;
+  if (days === 1) return `demain ${hm}`;
+  return `le ${String(at.getDate()).padStart(2, "0")}/${String(at.getMonth() + 1).padStart(2, "0")} ${hm}`;
+}
+
 /** Cadence du rendu plafonnée en gardant une image sur N (60 → 30, 59,94 → 29,97, 50 → 25), comme le serveur. */
 export function cappedFps(fps: number, cap: number): number {
   return fps <= cap + 0.01 ? fps : fps / Math.ceil(fps / cap - 1e-6);

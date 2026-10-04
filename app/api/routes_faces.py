@@ -2,7 +2,7 @@
 
 data/faces/<set_id>/set.json  {people: [id de personne…], rejected: [{id, name}], frozen?: true}
 Les photos importées ici entrent dans la bibliothèque (app/library.py), reconnues ou comme nouvelle personne ;
-seules les photos sans visage restent dans la session (nettoyées avec elle au bout de retention_hours).
+seules les photos sans visage restent dans la session.
 Chaque création a sa propre session. Celle d'un rendu lancé est figée : la modifier ensuite (rendu rouvert depuis
 l'historique, autre essai) crée une copie, et les rendus déjà faits gardent leurs personnes.
 """

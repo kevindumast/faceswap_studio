@@ -47,11 +47,12 @@ def character_status() -> dict:
     from app.worker.zerogpu_client import character_configured
 
     ccfg = load_config().get("levels", {}).get(CHARACTER, {})
-    defaults = ccfg.get("gpu_s_per_second", {"360p": 12, "480p": 26})
-    per_second = {res: float(db.get_meta(f"character_gpu_s:{res}") or defaults.get(res, 12)) for res in ("360p", "480p")}
+    defaults = ccfg.get("gpu_s_per_block_step", {"360p": 16, "480p": 36})
+    per_block_step = {res: float(db.get_meta(f"character_block_step_s:{res}") or defaults.get(res, 16))
+                      for res in ("360p", "480p")}
     return {"configured": character_configured(), "space": db.get_meta("zerogpu_character_space") or None,
-            "max_s": float(ccfg.get("max_s", 10)), "steps": int(ccfg.get("steps", 6)), "gpu_s_per_second": per_second,
-            "max_people": int(ccfg.get("max_people", 2))}
+            "max_s": float(ccfg.get("max_s", 10)), "steps": int(ccfg.get("steps", 4)),
+            "gpu_s_per_block_step": per_block_step, "max_people": int(ccfg.get("max_people", 2))}
 
 
 def levels_status(available: tuple[str, ...]) -> dict:

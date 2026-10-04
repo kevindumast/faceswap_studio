@@ -102,4 +102,5 @@ def test_zerogpu(kind: str = "faces") -> dict:
         db.set_meta(meta, "")
         raise HTTPException(502, str(exc)) from exc
     db.set_meta(meta, zg.settings()[field])
-    return {"ok": True, "latency_ms": round((time.perf_counter() - t0) * 1000), **health}
+    zg.refresh_pro(max_age=0)   # abonnement PRO pris ou arrêté entre-temps : quota affiché à jour tout de suite
+    return {"ok": True, "latency_ms": round((time.perf_counter() - t0) * 1000), "pro": zg.account_pro(), **health}

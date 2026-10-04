@@ -46,7 +46,7 @@ export function VideoStep({ status, onReady }: Props) {
       <SectionTitle
         eyebrow="Étape 1 · Vidéo"
         title="D'où vient la vidéo ?"
-        subtitle={`Colle un lien YouTube ou importe un fichier. Tu choisiras le passage de ${status?.segment.min_s ?? 5} à ${status?.segment.max_s ?? 60} s juste après.`}
+        subtitle={`Colle un lien YouTube ou importe un fichier. Tu choisiras le passage de ${String(status?.segment.min_s ?? 0.5).replace(".", ",")} à ${status?.segment.max_s ?? 60} s juste après.`}
       />
 
       <AnimatePresence mode="wait">
@@ -297,12 +297,19 @@ function RecentVideos({ onPick }: { onPick: (v: Video) => void }) {
     mutationFn: api.deleteVideo,
     onSuccess: () => qc.invalidateQueries({ queryKey: ["videos"] }),
   });
-  const ready = (data ?? []).filter((v) => v.status === "ready").slice(0, 6);
+  const [all, setAll] = useState(false);
+  const readyAll = (data ?? []).filter((v) => v.status === "ready");
+  const ready = all ? readyAll : readyAll.slice(0, 6);
   if (!ready.length) return null;
   return (
     <div className="mt-10">
       <div className="mb-3 flex items-center gap-2 text-[13px] font-medium text-muted">
         <Clock className="size-4" /> Vidéos récentes
+        {readyAll.length > 6 && (
+          <button onClick={() => setAll(!all)} className="ml-auto text-[12px] font-normal hover:text-fg">
+            {all ? "Réduire" : `Tout afficher (${readyAll.length})`}
+          </button>
+        )}
       </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         {ready.map((v) => (
@@ -318,7 +325,12 @@ function RecentVideos({ onPick }: { onPick: (v: Video) => void }) {
               <div className="truncate px-3 py-2.5 text-[13px]">{v.title}</div>
             </button>
             <button
-              onClick={() => del.mutate(v.id)}
+              onClick={() =>
+                window.confirm(
+                  `Supprimer « ${v.title ?? "cette vidéo"} » ?` +
+                    (v.renders ? `\n\n${v.renders} rendu(s) de l'historique l'utilisent : ils resteront téléchargeables mais ne pourront plus être rouverts.` : ""),
+                ) && del.mutate(v.id)
+              }
               aria-label="Supprimer la vidéo"
               className="absolute top-2 right-2 flex size-7 items-center justify-center rounded-lg bg-black/60 text-fg/80 opacity-0 backdrop-blur transition-opacity group-hover:opacity-100 hover:text-danger focus-visible:opacity-100"
             >

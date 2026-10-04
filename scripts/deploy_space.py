@@ -40,8 +40,9 @@ ZEROGPU = "zero-a10g"  # identifiant Hugging Face du matériel ZeroGPU
 
 def build_bundle(dst: Path, kind: str = "faces") -> None:
     """Dossier envoyé au Space : app Gradio + code du pipeline + config GPU (modèles et données dans /tmp)."""
+    shutil.copy2(ROOT / "space" / "jobs.py", dst / "jobs.py")   # suivi par requêtes courtes, commun aux deux Spaces
     if kind == "character":  # autonome : télécharge lui-même le code officiel Wan2.2 et ses poids
-        for name in ("app.py", "targeting.py", "README.md", "requirements.txt", "packages.txt"):
+        for name in ("app.py", "targeting.py", "distill.py", "README.md", "requirements.txt", "packages.txt"):
             shutil.copy2(ROOT / "space_character" / name, dst / name)
         return
     for name in ("app.py", "README.md", "requirements.txt", "packages.txt"):

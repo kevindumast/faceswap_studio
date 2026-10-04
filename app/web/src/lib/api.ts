@@ -33,6 +33,8 @@ export type Video = {
   proxy_url: string | null;
   filmstrip_url: string | null;
   poster_url: string | null;
+  /** Rendus de l'historique faits sur cette vidéo. */
+  renders: number;
   created_at: number;
 };
 
@@ -134,6 +136,10 @@ export type JobParams = {
   level: Level;
   use_gpu: boolean;
   resolution?: Resolution;
+  /** Niveau 4 : étapes de génération (4 = modèle distillé), lumière du décor, visage refait net sur ce PC. */
+  steps?: number;
+  relight?: boolean;
+  face_pass?: boolean;
   limit_fps?: boolean;
   restore?: boolean;
   /** Rendu sur ce PC : arrêt avant l'assemblage si des visages sont mal suivis. */
@@ -149,6 +155,8 @@ export type Job = {
   id: string;
   video_id: string;
   video_title: string | null;
+  /** Vidéo source supprimée : le rendu reste téléchargeable mais ne peut plus être rouvert. */
+  video_missing: boolean;
   face_set_id: string;
   params: JobParams;
   status: "queued" | "running" | "cancelling" | "cancelled" | "done" | "error" | "pausing" | "paused" | "review";
@@ -240,6 +248,10 @@ export type Status = {
     space: string | null;
     used_today_s: number;
     free_quota_s: number;
+    /** Compte Hugging Face PRO (40 min/jour de ZeroGPU) ; null tant que ce n'est pas connu. */
+    pro: boolean | null;
+    /** Dernier refus de quota de ZeroGPU encore valable : reste exact et heure du prochain essai (s depuis 1970). */
+    quota: { left_s: number | null; retry_at: number; seen_at: number } | null;
     sec_per_frame: Partial<Record<Level, number>>;
     /** Niveau 4 : Space dédié (Wan2.2-Animate) et de quoi estimer son temps de GPU. */
     character: {
@@ -247,7 +259,7 @@ export type Status = {
       space: string | null;
       max_s: number;
       steps: number;
-      gpu_s_per_second: Record<Resolution, number>;
+      gpu_s_per_block_step: Record<Resolution, number>;
       /** Personnes remplaçables par rendu : un passage GPU chacune. */
       max_people: number;
     };

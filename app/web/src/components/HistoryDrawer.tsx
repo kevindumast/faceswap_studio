@@ -64,14 +64,25 @@ export function HistoryDrawer({ open, onClose, onOpenJob }: { open: boolean; onC
               <ul className="space-y-2">
                 {data?.map((j) => (
                   <li key={j.id} className="group flex items-center gap-3 rounded-xl bg-raised p-2.5 ring-1 ring-line transition-colors hover:ring-line-strong">
-                    <button onClick={() => onOpenJob(j)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+                    <button
+                      onClick={() => onOpenJob(j)}
+                      disabled={j.video_missing}
+                      title={j.video_missing ? "Vidéo source supprimée : ce rendu reste téléchargeable mais ne peut plus être rouvert." : undefined}
+                      className="flex min-w-0 flex-1 items-center gap-3 text-left disabled:cursor-default"
+                    >
                       <div className="relative aspect-video w-24 shrink-0 overflow-hidden rounded-lg bg-black">
-                        <img src={`/api/videos/${j.video_id}/poster.jpg`} alt="" className="size-full object-cover" onError={(e) => (e.currentTarget.style.visibility = "hidden")} />
+                        <img
+                          src={j.video_missing ? j.preview_url : `/api/videos/${j.video_id}/poster.jpg`}
+                          alt=""
+                          className="size-full object-cover"
+                          onError={(e) => (e.currentTarget.style.visibility = "hidden")}
+                        />
                       </div>
                       <div className="min-w-0">
-                        <div className="truncate text-[13px] font-medium">{j.video_title ?? "Vidéo supprimée"}</div>
+                        <div className="truncate text-[13px] font-medium">{j.video_title ?? "Vidéo sans titre"}</div>
                         <div className="mt-0.5 font-mono text-[11px] text-muted">
                           {seconds(j.params.end - j.params.start)} · {j.params.output === "full" ? "complète" : "extrait"}
+                          {j.video_missing && " · source supprimée"}
                         </div>
                         <span
                           className={cx(
@@ -85,7 +96,7 @@ export function HistoryDrawer({ open, onClose, onOpenJob }: { open: boolean; onC
                         >
                           {LABEL[j.status]}
                           {j.status === "running" && parseStage(j.stage).key === "wake" ? " · réveil du Space" : ""}
-                          {j.status === "running" && j.total && ["swap", "pose", "mask", "generate"].includes(parseStage(j.stage).key ?? "")
+                          {j.status === "running" && j.total && ["swap", "pose", "mask", "generate", "face"].includes(parseStage(j.stage).key ?? "")
                             ? ` ${Math.round((j.done / j.total) * 100)} %`
                             : ""}
                         </span>
@@ -98,7 +109,9 @@ export function HistoryDrawer({ open, onClose, onOpenJob }: { open: boolean; onC
                         </a>
                       )}
                       {!["running", "cancelling", "pausing"].includes(j.status) && (
-                        <button onClick={() => del.mutate(j.id)} aria-label="Supprimer" className="flex size-7 items-center justify-center rounded-lg text-muted hover:bg-danger-soft hover:text-danger">
+                        <button
+                          onClick={() => window.confirm(`Supprimer ce rendu${j.video_title ? ` de « ${j.video_title} »` : ""} ? La vidéo finale sera effacée.`) && del.mutate(j.id)}
+                          aria-label="Supprimer" className="flex size-7 items-center justify-center rounded-lg text-muted hover:bg-danger-soft hover:text-danger">
                           <Trash2 className="size-3.5" />
                         </button>
                       )}
