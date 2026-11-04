@@ -58,7 +58,7 @@ class FramePlan:
     frames: list[dict | None] = field(default_factory=list)
 
     @classmethod
-    def load(cls, work_dir: Path) -> "FramePlan | None":
+    def load(cls, work_dir: Path) -> FramePlan | None:
         path = work_dir / PLAN
         if not path.is_file():
             return None

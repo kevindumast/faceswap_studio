@@ -325,7 +325,7 @@ def _in_review(job: dict) -> None:
 @router.get("/{job_id}/review")
 def get_review(job_id: str) -> dict:
     """Visages mal suivis (pistes à corriger) et visages de chaque image, pour l'écran de vérification."""
-    job = get_or_404("jobs", job_id, "Rendu")
+    get_or_404("jobs", job_id, "Rendu")
     plan = _plan(job_id)
     tracks, issues = review.analyze(plan)
     base = f"/api/jobs/{job_id}"

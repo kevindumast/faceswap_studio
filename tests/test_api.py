@@ -44,6 +44,7 @@ def test_status(client):
     assert s["segment"] == {"min_s": 0.5, "max_s": 60}
 
 
+@pytest.mark.models
 def test_segment_bounds(client, ready_video, make_session):
     rng = np.random.default_rng(0)
     fs, ids = make_session({"Kevin": [rng.normal(size=512)]})
@@ -62,6 +63,7 @@ def test_unknown_person_rejected(client, ready_video, make_session):
     assert r.status_code == 422 and "Z" in r.json()["detail"]
 
 
+@pytest.mark.models
 def test_same_person_on_many_faces(client, ready_video, make_session):
     """Une personne peut remplacer plusieurs visages ; au-delà du garde-fou, message clair."""
     from app.api.routes_jobs import MAX_MAPPINGS
@@ -135,6 +137,7 @@ def test_session_add_and_remove_person(client, make_session):
     assert client.get(f"/api/people/{ids['Pote']}").status_code == 200    # toujours dans la bibliothèque
 
 
+@pytest.mark.models
 def test_rendered_session_is_frozen(client, ready_video, make_session):
     """Les personnes d'un rendu lancé ne bougent plus : modifier la session ensuite part sur une copie."""
     rng = np.random.default_rng(5)

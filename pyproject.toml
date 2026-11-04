@@ -14,14 +14,33 @@ dependencies = [
     "onnx",
     "opencv-python-headless",
     "numpy",
+    "scipy",            # niveau 3 : rotations de la pose (LivePortrait)
+    "pillow",           # étiquette « Contenu modifié par IA » (accents)
     # GPU distant ZeroGPU (optionnel à l'usage, mais le panneau Moteur les importe)
     "gradio_client",
     "huggingface_hub",
+    "httpx",            # requêtes courtes vers le Space (zerogpu_client)
     "truststore",       # proxy d'entreprise : vérifie TLS avec les certificats de Windows
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "httpx"]
+dev = ["pytest", "httpx", "ruff"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 150
+target-version = "py310"
+extend-exclude = ["app/web"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "SIM"]
+ignore = [
+    "B008",    # FastAPI : File(...) / Query(...) en valeur par défaut, c'est l'usage prévu
+    "B905",    # zip() sans strict= : longueurs garanties par construction
+    "UP035",   # typing.Callable : gardé tant que Python 3.10 est pris en charge
+    "SIM105",  # try/except/pass lisible là où il est employé
+    "SIM108",
+    "E741",    # l, t, r, b : bords d'un rectangle, lisibles dans ce contexte
+]

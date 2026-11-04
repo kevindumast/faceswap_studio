@@ -17,7 +17,7 @@ from __future__ import annotations
 import threading
 import warnings
 from dataclasses import dataclass, replace
-from functools import lru_cache
+from functools import lru_cache, cache
 from pathlib import Path
 
 import cv2
@@ -55,7 +55,7 @@ def model_path(name: str) -> Path:
     return cfg.path("models") / "head" / cfg.get("models", {}).get("head", {}).get(name, FILES[name])
 
 
-@lru_cache(maxsize=None)
+@cache
 def _session(name: str):
     import onnxruntime as ort
 
@@ -118,7 +118,7 @@ class Motion:
     points: np.ndarray
 
     @classmethod
-    def extract(cls, crop: np.ndarray) -> "Motion":
+    def extract(cls, crop: np.ndarray) -> Motion:
         pitch, yaw, roll, scale, translation, expression, points = run("motion_extractor", {"input": to_input(crop)})
         return cls(float(np.ravel(pitch)[0]), float(np.ravel(yaw)[0]), float(np.ravel(roll)[0]),
                    np.asarray(scale, np.float32), np.asarray(translation, np.float32),
@@ -162,7 +162,7 @@ class SourceHead:
     keypoints: np.ndarray
 
     @classmethod
-    def from_photo(cls, img: np.ndarray, kps, scale: float) -> "SourceHead":
+    def from_photo(cls, img: np.ndarray, kps, scale: float) -> SourceHead:
         crop, _ = align(img, kps, scale)
         x = to_input(crop)
         feature = run("feature_extractor", {"input": x})[0]
@@ -173,7 +173,7 @@ class SourceHead:
         return cls(feature, motion, motion.keypoints())
 
     @classmethod
-    def from_path(cls, path: Path, scale: float) -> "SourceHead":
+    def from_path(cls, path: Path, scale: float) -> SourceHead:
         from .identity import detect_photo, read_image_full
 
         img = read_image_full(path)

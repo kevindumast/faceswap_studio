@@ -8,8 +8,6 @@ import pytest
 from src import tone
 from src.identity import analyze_photo, detect_photo, pad_tight
 
-MODELS = Path(__file__).resolve().parent.parent / "models" / "buffalo_l"
-needs_models = pytest.mark.skipif(not any(MODELS.glob("*.onnx")), reason="modèles absents (scripts/download_models.py)")
 
 
 def _sample(name: str) -> Path:
@@ -26,7 +24,7 @@ def test_pad_tight_adds_replicated_margin():
     assert out.shape == (200, 160, 3) and (out == 7).all()
 
 
-@needs_models
+@pytest.mark.models
 def test_tight_crop_is_detected(tmp_path):
     """Visage cadré au ras (112 px aligné) : rien sans marge, trouvé avec."""
     path = _sample("Tom_Hanks_54745.png")

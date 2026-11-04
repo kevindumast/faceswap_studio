@@ -46,7 +46,7 @@ class ToneStats:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict) -> "ToneStats":
+    def from_dict(cls, d: dict) -> ToneStats:
         neutral = d.get("neutral")
         return cls(np.array(d["mean"], np.float32), np.array(d["std"], np.float32),
                    None if neutral is None else np.array(neutral, np.float32))
@@ -64,7 +64,7 @@ class ToneSettings:
     hold: int = 6                # images où l'on garde le masque précédent si la peau n'est pas trouvée
 
     @classmethod
-    def from_config(cls, lcfg) -> "ToneSettings":
+    def from_config(cls, lcfg) -> ToneSettings:
         d = cls()
         return cls(strength_l=float(lcfg.get("tone_strength_l", d.strength_l)),
                    smoothing=float(lcfg.get("tone_smoothing", d.smoothing)),

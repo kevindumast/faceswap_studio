@@ -305,7 +305,7 @@ class ZeroGPUClient:
         self.short_requests = _has_endpoint(self.client, "/status")
 
     @classmethod
-    def from_settings(cls, kind: str = "faces") -> "ZeroGPUClient":
+    def from_settings(cls, kind: str = "faces") -> ZeroGPUClient:
         s = settings()
         space = s["character_space"] if kind == "character" else s["space"]
         if not (space and s["key"]):

@@ -166,6 +166,7 @@ def test_recompute_only_touches_chosen_frames(sample_video, tmp_path, monkeypatc
     assert len(means) == 25 and min(means) > 245                                # la copie (image 3) suit aussi
 
 
+@pytest.mark.models
 def test_plan_recorded_by_swap_segment_and_resumed(sample_video, tmp_path):
     """Le journal suit le rendu image par image, y compris après une pause (jamais plus court que les morceaux)."""
     from src import media
@@ -206,6 +207,7 @@ def client():
         yield c
 
 
+@pytest.mark.models
 def test_review_api_flow(client, sample_video, make_session):
     """En vérification : analyse, choix → recalcul (worker), retour, assemblage refusé tant que tout n'est pas calculé."""
     import time

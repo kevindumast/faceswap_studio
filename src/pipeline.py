@@ -57,7 +57,7 @@ class Checkpoint:
     elapsed: float = 0.0                # temps de calcul cumulé sur toutes les sessions
 
     @classmethod
-    def load(cls, work_dir: Path) -> "Checkpoint":
+    def load(cls, work_dir: Path) -> Checkpoint:
         path = work_dir / "checkpoint.json"
         if path.is_file():
             return cls(path=path, **json.loads(path.read_text(encoding="utf-8")))

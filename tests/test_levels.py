@@ -275,6 +275,7 @@ def _job(client, setup, **extra):
     return client.post("/api/jobs", json=body)
 
 
+@pytest.mark.models
 def test_default_is_level1_on_cpu(client, setup):
     r = _job(client, setup)
     assert r.status_code == 200

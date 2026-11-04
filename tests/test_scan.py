@@ -1,5 +1,6 @@
 """Recherche des personnes d'un passage : répartition des images et repérage des doublons probables."""
 import numpy as np
+import pytest
 
 from src.scan import Person, _flag_probable_duplicates, next_samples, sample_times
 
@@ -114,6 +115,7 @@ def test_region_detection_zooms_and_maps_back_to_the_full_frame(monkeypatch):
     assert faces.detect_in_region(frame, (0.3, 0.3, 0.35, 0.45), 640, 0.3) is None
 
 
+@pytest.mark.models
 def test_reference_falls_back_to_zoomed_detection(monkeypatch):
     """Visage ajouté à la main, introuvable sur l'image entière : la référence du rendu est prise en zoomant."""
     from pathlib import Path

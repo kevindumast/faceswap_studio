@@ -8,7 +8,7 @@ import shutil
 import subprocess
 from dataclasses import asdict, dataclass
 from fractions import Fraction
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 from typing import Callable
 
@@ -25,7 +25,7 @@ class MediaError(RuntimeError):
     pass
 
 
-@lru_cache(maxsize=None)
+@cache
 def binary(name: str) -> str:
     """Résout ffmpeg / ffprobe : config, PATH, puis dossier d'installation winget."""
     configured = load_config().get(name, name)
@@ -224,7 +224,7 @@ class FrameWriter:
             pass
         self.proc.kill()
 
-    def __enter__(self) -> "FrameWriter":
+    def __enter__(self) -> FrameWriter:
         return self
 
     def __exit__(self, exc_type, *_):

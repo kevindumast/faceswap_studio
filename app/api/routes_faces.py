@@ -35,7 +35,7 @@ def _dir(set_id: str) -> Path:
     try:
         d = db.folder("faces", set_id)
     except ValueError:
-        raise not_found("Session de visages")
+        raise not_found("Session de visages") from None
     if not (d / "set.json").is_file():
         raise not_found("Session de visages")
     return d

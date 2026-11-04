@@ -10,6 +10,25 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 
+def _base_models_present() -> bool:
+    models = ROOT / "models"
+    return (models / "inswapper_128.onnx").is_file() and any((models / "buffalo_l").glob("*.onnx"))
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "models: test qui a besoin des modèles de base (scripts/download_models.py)")
+
+
+def pytest_collection_modifyitems(config, items):
+    """Sans les modèles (CI, nouveau clone) : les tests qui en ont besoin sont ignorés, pas en échec."""
+    if _base_models_present():
+        return
+    skip = pytest.mark.skip(reason="modèles absents : python scripts/download_models.py")
+    for item in items:
+        if "models" in item.keywords:
+            item.add_marker(skip)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def isolated_config(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("faceswap")
