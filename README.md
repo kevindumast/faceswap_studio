@@ -62,6 +62,8 @@ Choisis à l'étape « Visages ». Tout tourne sur ton CPU ; le GPU (ZeroGPU) es
 
 Niveau 1 : le visage généré (128 px) est recollé avec un bord adouci, et sa couleur est ramenée sur celle du visage
 d'origine (écart lissé d'une image à l'autre) : plus de visage grisé qui clignote de profil.
+Si la segmentation du niveau 2 est installée, ce qui passe devant le visage (main, verre, micro, mèche) est gardé :
+le visage généré n'est recollé que sur le visage réellement visible (`render.occlusion_mask`).
 
 Niveau 2 : la zone recolorée combine la segmentation, une zone autour du visage (ellipse + cou) et un filtre couleur
 calé sur le cœur du visage, pour ne jamais teinter la chemise ou le décor. Yeux, bouche, lunettes, cheveux et bijoux

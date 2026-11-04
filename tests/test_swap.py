@@ -46,3 +46,33 @@ def test_color_fix_leaves_the_background_of_the_square_alone():
     out = swap._shift_lab(img, np.array([15, 5, 5], np.float32), swap.face_zone())
     assert np.abs(out[:6, :6].astype(int) - img[:6, :6].astype(int)).max() <= 1      # coins : intacts
     assert np.abs(out[70, 64].astype(int) - img[70, 64].astype(int)).max() > 5       # centre du visage : corrigé
+
+
+def test_occlusion_mask_keeps_what_hides_the_face(monkeypatch):
+    """Objet devant la bouche (classé « fond » par la segmentation) : on n'y recolle pas le visage généré."""
+    from src import parsing, swap
+
+    def fake_parse(img):
+        labels = np.full(img.shape[:2], parsing.SKIN, np.uint8)
+        h, w = labels.shape
+        labels[int(h * 0.6):, : w // 2] = parsing.BACKGROUND          # main devant le bas gauche du visage
+        return labels
+
+    monkeypatch.setattr(parsing, "_session", lambda: None)
+    monkeypatch.setattr(parsing, "parse", fake_parse)
+    frame = np.zeros((300, 300, 3), np.uint8)
+    M = np.array([[1.0, 0, -50], [0, 1.0, -50]], np.float32)
+    m = swap.occlusion_mask(frame, M, 128)
+    assert m.shape == (128, 128)
+    assert m[110:, :40].max() < 0.05 and m[20:60, 20:100].min() > 0.95
+
+
+def test_occlusion_mask_off_without_segmentation(monkeypatch):
+    from src import parsing, swap
+    from src.faces import ModelsMissing
+
+    def missing():
+        raise ModelsMissing("absent")
+
+    monkeypatch.setattr(parsing, "_session", missing)
+    assert swap.occlusion_mask(np.zeros((64, 64, 3), np.uint8), np.eye(2, 3, dtype=np.float32), 128) is None

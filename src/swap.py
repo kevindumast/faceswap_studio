@@ -16,6 +16,10 @@ import numpy as np
 
 from .config import load_config, providers
 from .faces import ModelsMissing
+from .parsing import GLASSES, HAT, L_BROW, L_EYE, L_LIP, MOUTH, NOSE, R_BROW, R_EYE, SKIN, U_LIP
+
+# Ce qui compte comme visage d'origine visible. HAT : de profil, BiSeNet range souvent le bas du visage en « chapeau ».
+FACE_CLASSES = (SKIN, L_BROW, R_BROW, L_EYE, R_EYE, GLASSES, NOSE, MOUTH, U_LIP, L_LIP, HAT)
 
 _lock = threading.Lock()
 SIZE = 128
@@ -131,10 +135,43 @@ def swap_face(frame: np.ndarray, target_face, source_face, state: SwapState | No
             state.shift = shift
         if shift is not None:
             fake = _shift_lab(fake, strength * shift, face_zone())
+    base_M = M                          # espace aligné 128 (avant un éventuel agrandissement par la netteté)
     if restore:
         from . import restore as _restore
 
         fake = _restore.restore(fake, float(rcfg.get("restore_fidelity", 0.5)))
         M = M * (fake.shape[0] / SIZE)   # le collage se fait maintenant depuis un visage plus grand (même cadrage)
     mask = paste_mask(float(rcfg.get("swap_mask_erode", 0.1)), float(rcfg.get("swap_mask_blur", 0.02)), fake.shape[0])
+    occlusion = occlusion_mask(frame, base_M, fake.shape[0]) if rcfg.get("occlusion_mask", True) else None
+    if occlusion is not None:
+        mask = mask * occlusion
     return paste(frame, fake, M, mask)
+
+
+OCCLUSION_SIZE = 256   # résolution d'analyse du visage d'origine (BiSeNet), dans l'espace aligné
+
+
+def occlusion_mask(frame: np.ndarray, M: np.ndarray, size: int) -> np.ndarray | None:
+    """Où le visage d'origine est réellement visible (0–1, espace aligné de côté `size`).
+
+    Main, verre, micro, mèche de cheveux devant le visage : BiSeNet ne les classe pas en « visage », on n'y recolle
+    donc pas le visage généré (sinon un nez ou une bouche apparaissait par-dessus l'objet). None si la segmentation
+    n'est pas installée (niveau 2) ou si elle ne trouve presque rien (profil extrême : mieux vaut le collage simple).
+    """
+    from . import parsing
+
+    try:
+        parsing._session()
+    except ModelsMissing:
+        return None
+    n = OCCLUSION_SIZE
+    Mo = M * (n / SIZE)
+    original = cv2.warpAffine(frame, Mo, (n, n), borderMode=cv2.BORDER_REPLICATE)
+    labels = parsing.parse(original)
+    face = parsing.mask(labels, FACE_CLASSES).astype(np.uint8)
+    if face.mean() < 0.15:
+        return None
+    # Petites erreurs de segmentation bouchées, puis bord adouci pour un raccord invisible.
+    face = cv2.morphologyEx(face, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+    soft = cv2.GaussianBlur(face.astype(np.float32), (0, 0), n * 0.012)
+    return cv2.resize(soft, (size, size), interpolation=cv2.INTER_LINEAR)
