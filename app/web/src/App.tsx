@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import { BookUser, History } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { api, type Job, type Level, type Mapping, type Status, type Video } from "./lib/api";
 import { Stepper } from "./components/Stepper";
 import { HistoryDrawer } from "./components/HistoryDrawer";
@@ -11,9 +11,11 @@ import { chrono, useElapsed, useSpaceState } from "./components/SpaceStatus";
 import { Button, cx } from "./components/ui";
 import type { Selection } from "./components/trimmer/Trimmer";
 import { VideoStep } from "./steps/VideoStep";
-import { SegmentStep } from "./steps/SegmentStep";
-import { FacesStep } from "./steps/FacesStep";
-import { RenderStep } from "./steps/RenderStep";
+
+// Étapes suivantes chargées à la demande : la première page s'affiche sans attendre leur code.
+const SegmentStep = lazy(() => import("./steps/SegmentStep").then((m) => ({ default: m.SegmentStep })));
+const FacesStep = lazy(() => import("./steps/FacesStep").then((m) => ({ default: m.FacesStep })));
+const RenderStep = lazy(() => import("./steps/RenderStep").then((m) => ({ default: m.RenderStep })));
 
 type Session = {
   step: number;
@@ -110,7 +112,7 @@ export default function App() {
   return (
     <div className="bg-studio min-h-dvh">
       <header className="sticky top-0 z-30 border-b border-line/70 bg-bg/80 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 max-w-6xl items-center gap-4 px-4 sm:px-6">
+        <div className="mx-auto flex h-16 max-w-6xl items-center gap-2 px-4 sm:gap-4 sm:px-6">
           <button onClick={() => patch({ step: 0 })} className="flex shrink-0 items-center gap-2.5" aria-label="Accueil">
             <span className="flex size-8 items-center justify-center rounded-[9px] bg-accent text-accent-ink">
               <svg viewBox="0 0 20 20" className="size-4" aria-hidden>
@@ -121,7 +123,7 @@ export default function App() {
               Faceswap <span className="text-muted">Studio</span>
             </span>
           </button>
-          <div className="flex flex-1 justify-center">
+          <div className="flex min-w-0 flex-1 justify-center">
             <Stepper current={step} reachable={reachable} onGo={(i) => patch({ step: i })} />
           </div>
           <EngineStatus data={status.data} error={!!status.error} onOpen={() => setEngineOpen(true)} />
@@ -143,6 +145,7 @@ export default function App() {
             exit={{ opacity: 0, y: -6 }}
             transition={{ duration: 0.18, ease: "easeOut" }}
           >
+            <Suspense fallback={<div className="h-64 animate-pulse rounded-2xl bg-raised/40" aria-busy="true" />}>
             {step === 0 && <VideoStep status={status.data} onReady={onVideoReady} />}
             {step === 1 && ready && s.selection && (
               <SegmentStep
@@ -184,6 +187,7 @@ export default function App() {
                 onNewVideo={() => patch(EMPTY)}
               />
             )}
+            </Suspense>
           </motion.div>
         </AnimatePresence>
       </main>
@@ -249,15 +253,16 @@ function EngineStatus({ data, error, onOpen }: { data?: Status; error: boolean; 
     <button
       onClick={onOpen}
       title={`${title} · Cliquer pour les réglages du moteur`}
+      aria-label={`${label} : réglages du moteur`}
       className={cx(
-        "hidden shrink-0 items-center gap-2 rounded-full px-3 py-1 text-[12px] font-medium ring-1 transition-colors hover:bg-raised sm:flex",
+        "flex shrink-0 items-center gap-2 rounded-full p-2 text-[12px] font-medium ring-1 transition-colors hover:bg-raised sm:px-3 sm:py-1",
         tone === "ok" && "text-muted ring-line",
         tone === "warn" && "bg-warn-soft text-warn ring-warn/30",
         tone === "down" && "bg-danger-soft text-danger ring-danger/30",
       )}
     >
       <span className={cx("size-1.5 rounded-full", tone === "ok" ? "bg-accent shadow-[0_0_6px_var(--color-accent)]" : tone === "warn" ? "bg-warn" : "bg-danger")} />
-      {label}
+      <span className="hidden sm:inline">{label}</span>
     </button>
   );
 }

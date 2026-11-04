@@ -961,7 +961,11 @@ function Done({ job, video, onJob, onEditSegment, onNewVideo }: { job: Job } & P
             <dl className="grid grid-cols-2 gap-4 text-[13px]">
               <Stat label="Images traitées" value={`${job.total}`} />
               <Stat label="Temps total" value={job.elapsed ? duration(job.elapsed) : "—"} />
-              <Stat label="Vitesse" value={job.sec_per_frame ? renderSpeed(job.sec_per_frame, 2) : "—"} />
+              <Stat
+                label="Vitesse"
+                value={job.sec_per_frame ? `${job.sec_per_frame.toFixed(2).replace(".", ",")} s/img` : "—"}
+                sub={job.sec_per_frame ? `${(1 / job.sec_per_frame).toFixed(2).replace(".", ",")} img/s` : undefined}
+              />
               <Stat label="Sortie" value={job.params.output === "full" ? "Vidéo complète" : "Extrait seul"} />
             </dl>
           </Card>
@@ -995,11 +999,12 @@ function Done({ job, video, onJob, onEditSegment, onNewVideo }: { job: Job } & P
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
     <div>
       <dt className="text-faint">{label}</dt>
-      <dd className="mt-0.5 font-mono text-[15px] tabular">{value}</dd>
+      <dd className="mt-0.5 font-mono text-[15px] whitespace-nowrap tabular">{value}</dd>
+      {sub && <dd className="font-mono text-[12px] text-faint tabular">{sub}</dd>}
     </div>
   );
 }

@@ -12,13 +12,13 @@ export function Stepper({ current, reachable, onGo }: { current: number; reachab
         const ok = reachable(i);
         return (
           <div key={label} className="flex items-center gap-1">
-            {i > 0 && <span className={cx("h-px w-4 sm:w-8", i <= current ? "bg-accent/50" : "bg-line")} />}
+            {i > 0 && <span className={cx("h-px w-2.5 sm:w-8", i <= current ? "bg-accent/50" : "bg-line")} />}
             <button
               disabled={!ok}
               onClick={() => onGo(i)}
               aria-current={active ? "step" : undefined}
               className={cx(
-                "flex items-center gap-2 rounded-full py-1 pr-3 pl-1 text-[13px] font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed",
+                "flex items-center gap-2 rounded-full p-1 text-[13px] sm:pr-3 font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed",
                 active ? "bg-raised text-fg ring-1 ring-line-strong" : ok ? "text-muted hover:text-fg" : "text-faint",
               )}
             >

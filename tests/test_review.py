@@ -256,7 +256,16 @@ def test_review_api_flow(client, sample_video, make_session):
     assert client.get(f"/api/jobs/{job['id']}").json()["reviewable"] is True
     assert client.post(f"/api/jobs/{job['id']}/reopen").json()["status"] == "review"
     client.post(f"/api/jobs/{job['id']}/cancel")
-    assert client.get(f"/api/jobs/{job['id']}").json()["status"] == "cancelled"
+    assert client.get(f"/api/jobs/{job['id']}").json()["status"] == "cancelled"     # pas de vidéo assemblée
+
+    # Rendu terminé (vidéo assemblée) rouvert pour être revu : elle reste téléchargeable, et quitter la vérification
+    # le rend tel quel au lieu de l'annuler.
+    db.update("jobs", job["id"], status="done")
+    (db.folder("jobs", job["id"]) / "result.mp4").write_bytes(b"mp4")
+    reopened = client.post(f"/api/jobs/{job['id']}/reopen").json()
+    assert reopened["status"] == "review" and reopened["result_url"]
+    kept = client.post(f"/api/jobs/{job['id']}/cancel").json()
+    assert kept["status"] == "done" and kept["result_url"]
 
 
 def test_removal_starts_again_from_the_original(sample_video, tmp_path, monkeypatch):

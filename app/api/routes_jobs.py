@@ -151,13 +151,18 @@ def public(job: dict) -> dict:
         "error": job["error"],
         "warnings": job["warnings"] or [],
         "preview_url": f"{base}/preview.jpg",
-        "result_url": f"{base}/result.mp4" if done else None,
+        # Rendu rouvert pour vérification : la vidéo déjà assemblée reste téléchargeable tant qu'elle n'est pas refaite.
+        "result_url": f"{base}/result.mp4" if done or (in_review and params.get("reopened") and _has_result(job["id"])) else None,
         "partial_url": f"{base}/partial.mp4?v={partial}" if partial else None,
         "before_url": before if done or partial or in_review else None,
         # Rendu terminé qui garde son journal et sa vidéo sans son : on peut encore le revoir et le corriger.
         "reviewable": done and _reviewable(job["id"]),
         "created_at": job["created_at"],
     }
+
+
+def _has_result(job_id: str) -> bool:
+    return (db.folder("jobs", job_id) / "result.mp4").is_file()
 
 
 def _reviewable(job_id: str) -> bool:
@@ -242,6 +247,9 @@ def cancel_job(job_id: str) -> dict:
         # Correction ou assemblage pas encore commencé : retour à la vérification, rien n'est perdu.
         params = {k: v for k, v in job["params"].items() if k != "review_step"}
         db.update("jobs", job_id, status="review", stage="review", params=params)
+    elif job["status"] == "review" and job["params"].get("reopened") and _has_result(job_id):
+        # Rendu terminé rouvert pour être revu : on garde la vidéo déjà assemblée, jamais « annulée ».
+        db.update("jobs", job_id, status="done", stage="assemble", error=None)
     elif job["status"] in ("queued", "paused", "review"):
         db.update("jobs", job_id, status="cancelled", finished_at=time.time())
     elif job["status"] in ("running", "pausing"):
@@ -386,7 +394,7 @@ def reopen(job_id: str) -> dict:
         raise HTTPException(409, "Seul un rendu terminé peut être revu.")
     if not _reviewable(job_id):
         raise HTTPException(409, "Ce rendu ne garde pas de quoi être revu (rendu sur GPU, ou lancé avant cette fonction).")
-    db.update("jobs", job_id, status="review", stage="review", error=None)
+    db.update("jobs", job_id, status="review", stage="review", error=None, params={**job["params"], "reopened": True})
     return public(db.get("jobs", job_id))
 
 

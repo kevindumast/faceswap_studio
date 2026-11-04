@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Eye, Loader2, Pause, Play, RotateCcw, SkipBack, SkipForward, Wand2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Eye, Loader2, Undo2, Pause, Play, RotateCcw, SkipBack, SkipForward, Wand2 } from "lucide-react";
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { api, type Job, type Person, type Review, type ReviewDecision, type ReviewIssue } from "../lib/api";
 import { styleOf } from "../lib/people";
@@ -56,6 +56,9 @@ export function ReviewStep({ job }: { job: Job }) {
     onSuccess: onJob,
   });
   const assemble = useMutation({ mutationFn: () => api.assembleJob(job.id), onSuccess: onJob });
+  // Rendu terminé rouvert : on peut repartir sans rien changer, la vidéo déjà assemblée est gardée.
+  const keep = useMutation({ mutationFn: () => api.cancelJob(job.id), onSuccess: onJob });
+  const reopened = !!job.params.reopened && !!job.result_url;
 
   if (review.error) {
     return (
@@ -95,7 +98,7 @@ export function ReviewStep({ job }: { job: Job }) {
     if (decided.length && !window.confirm("Tes choix pas encore appliqués seront ignorés. Assembler quand même ?")) return;
     assemble.mutate();
   };
-  const error = apply.error ?? assemble.error;
+  const error = apply.error ?? assemble.error ?? keep.error;
 
   return (
     <div>
@@ -108,9 +111,17 @@ export function ReviewStep({ job }: { job: Job }) {
             : "Plus rien à corriger d'important. Tu peux encore revoir la vidéo, puis assembler."
         }
         right={
-          <Button variant={decided.length ? "secondary" : "primary"} size="lg" icon={<Wand2 className="size-4" />} loading={assemble.isPending} onClick={onAssemble}>
-            Assembler la vidéo
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            {reopened && (
+              <Button variant="ghost" size="lg" icon={<Undo2 className="size-4" />} loading={keep.isPending} onClick={() => keep.mutate()}
+                title="Quitter la vérification sans rien changer : la vidéo déjà assemblée est gardée">
+                Garder le rendu actuel
+              </Button>
+            )}
+            <Button variant={decided.length ? "secondary" : "primary"} size="lg" icon={<Wand2 className="size-4" />} loading={assemble.isPending} onClick={onAssemble}>
+              Assembler la vidéo
+            </Button>
+          </div>
         }
       />
       {job.error && (

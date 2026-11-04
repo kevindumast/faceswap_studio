@@ -146,6 +146,8 @@ export type JobParams = {
   review?: boolean;
   /** Étape de la vérification en cours : recalcul des images corrigées, ou assemblage final. */
   review_step?: "fix" | "assemble";
+  /** Rendu terminé rouvert pour être revu : la vidéo déjà assemblée reste disponible. */
+  reopened?: boolean;
 };
 
 /** Niveau 4 : résolution à laquelle la personne est générée sur le Space (puis recollée sur la vidéo). */
