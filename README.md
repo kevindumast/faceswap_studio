@@ -109,6 +109,22 @@ et l'étiquette. Un rendu terminé se rouvre avec « Revoir les images ». Régl
 
 Pas encore avec l'option GPU (ZeroGPU) ni au niveau 4 : le détail image par image reste sur le Space.
 
+## Montage (TikTok, Reels, Shorts)
+
+Bouton « Montage » en haut de l'appli : enchaîne plusieurs rendus terminés en une seule vidéo à partager.
+
+- **Formats** : vertical 9:16 (1080×1920), carré 1:1 ou horizontal 16:9 ; vidéo entière sur **fond flouté**, ou
+  **plein cadre** qui suit les visages.
+- **Masques qui suivent les visages** : bonnet de Père Noël, bois et nez de renne, nez rouge (dessinés par l'appli,
+  posés sur chaque visage et lissés d'une image à l'autre).
+- **Effets** : neige, filtres (chaleureux, ciné, vintage, noir et blanc), vignettage, zoom lent.
+- **Écran titre**, **légende par séquence** (« Papa en Rocky »), **message de fin**, transitions fondu / flash / coupe.
+- **Musique de fond** (mp3, m4a, wav…) : bouclée, fondue à la fin, et qui baisse toute seule quand quelqu'un parle.
+- Ambiances en un clic : « Noël en famille », « Rennes et nez rouges », « Bande-annonce » ; bouton « Aperçu » pour
+  juger le rendu sur une image avant de lancer le calcul (~4× la durée du montage sur un i7).
+
+Code : `src/montage.py` (image et son), `app/api/routes_montages.py`, `app/web/src/components/MontageStudio.tsx`.
+
 ## En ligne de commande (sans l'appli)
 
 ```powershell

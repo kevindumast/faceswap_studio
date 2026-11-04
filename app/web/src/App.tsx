@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
-import { BookUser, History } from "lucide-react";
+import { BookUser, Clapperboard, History } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { api, type Job, type Level, type Mapping, type Status, type Video } from "./lib/api";
 import { Stepper } from "./components/Stepper";
@@ -15,6 +15,7 @@ import { VideoStep } from "./steps/VideoStep";
 // Étapes suivantes chargées à la demande : la première page s'affiche sans attendre leur code.
 const SegmentStep = lazy(() => import("./steps/SegmentStep").then((m) => ({ default: m.SegmentStep })));
 const FacesStep = lazy(() => import("./steps/FacesStep").then((m) => ({ default: m.FacesStep })));
+const MontageStudio = lazy(() => import("./components/MontageStudio").then((m) => ({ default: m.MontageStudio })));
 const RenderStep = lazy(() => import("./steps/RenderStep").then((m) => ({ default: m.RenderStep })));
 
 type Session = {
@@ -45,6 +46,12 @@ function loadSession(): Session {
 export default function App() {
   const [s, setS] = useState<Session>(loadSession);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [montageOpen, setMontageOpen] = useState(false);
+  // Chargé à la première ouverture, puis gardé : la sélection en cours survit à la fermeture du panneau.
+  const [montageLoaded, setMontageLoaded] = useState(false);
+  useEffect(() => {
+    if (montageOpen) setMontageLoaded(true);
+  }, [montageOpen]);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [engineOpen, setEngineOpen] = useState(false);
   useEffect(() => {
@@ -127,6 +134,9 @@ export default function App() {
             <Stepper current={step} reachable={reachable} onGo={(i) => patch({ step: i })} />
           </div>
           <EngineStatus data={status.data} error={!!status.error} onOpen={() => setEngineOpen(true)} />
+          <Button variant="ghost" size="sm" onClick={() => setMontageOpen(true)} icon={<Clapperboard className="size-4" />} aria-label="Montage">
+            <span className="hidden lg:inline">Montage</span>
+          </Button>
           <Button variant="ghost" size="sm" onClick={() => setLibraryOpen(true)} icon={<BookUser className="size-4" />} aria-label="Personnes">
             <span className="hidden lg:inline">Personnes</span>
           </Button>
@@ -193,6 +203,11 @@ export default function App() {
       </main>
 
       <HistoryDrawer open={historyOpen} onClose={() => setHistoryOpen(false)} onOpenJob={openJob} />
+      {montageLoaded && (
+        <Suspense fallback={null}>
+          <MontageStudio open={montageOpen} onClose={() => setMontageOpen(false)} />
+        </Suspense>
+      )}
       <LibraryDrawer open={libraryOpen} onClose={() => setLibraryOpen(false)} />
       <EngineSettings open={engineOpen} onClose={() => setEngineOpen(false)} status={status.data} />
     </div>

@@ -317,6 +317,48 @@ async function parseError(res: Response): Promise<ApiError> {
   return new ApiError(res.status, message);
 }
 
+export type MontageFormat = "9:16" | "1:1" | "16:9";
+export type MontageMask = "none" | "santa" | "reindeer" | "nose";
+export type MontageGrade = "none" | "warm" | "cinema" | "vintage" | "bw";
+
+export interface MontageClipIn {
+  job_id: string;
+  caption: string;
+}
+
+export interface MontageIn {
+  clips: MontageClipIn[];
+  format: MontageFormat;
+  fit: "blur" | "crop";
+  title: string;
+  subtitle: string;
+  outro: string;
+  grade: MontageGrade;
+  snow: boolean;
+  vignette: boolean;
+  zoom: boolean;
+  mask: MontageMask;
+  transition: "fade" | "flash" | "cut";
+  music_id: string | null;
+  music_volume: number;
+  clip_audio: boolean;
+  ai_label: boolean;
+}
+
+export interface Montage {
+  id: string;
+  title: string;
+  status: "queued" | "running" | "cancelling" | "cancelled" | "done" | "error";
+  progress: number;
+  error: string | null;
+  info: { frames: number; duration: number; width: number; height: number } | null;
+  params: MontageIn;
+  created_at: number;
+  finished_at: number | null;
+  result_url: string | null;
+  download_url: string | null;
+}
+
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {
     method,
@@ -442,4 +484,14 @@ export const api = {
   assembleJob: (id: string) => request<Job>("POST", `/api/jobs/${id}/assemble`),
   reopenJob: (id: string) => request<Job>("POST", `/api/jobs/${id}/reopen`),
   deleteJob: (id: string) => request<{ ok: boolean }>("DELETE", `/api/jobs/${id}`),
+  montages: () => request<Montage[]>("GET", "/api/montages"),
+  createMontage: (body: MontageIn) => request<Montage>("POST", "/api/montages", body),
+  previewMontage: (body: MontageIn) => request<{ image: string }>("POST", "/api/montages/preview", body),
+  cancelMontage: (id: string) => request<Montage>("POST", `/api/montages/${id}/cancel`),
+  deleteMontage: (id: string) => request<{ ok: boolean }>("DELETE", `/api/montages/${id}`),
+  uploadMusic: (file: File, onProgress?: (f: number) => void) => {
+    const form = new FormData();
+    form.append("file", file);
+    return upload<{ id: string; name: string }>("/api/montages/music", form, onProgress);
+  },
 };
