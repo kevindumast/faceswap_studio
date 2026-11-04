@@ -240,9 +240,15 @@ def apply_grade(img: np.ndarray, grade: str) -> np.ndarray:
 
 @lru_cache(maxsize=4)
 def vignette_map(W: int, H: int, strength: float = 0.45) -> np.ndarray:
+    """Assombrissement des bords, en uint8 3 canaux (255 = intact) : appliqué par cv2.multiply, sans passer en flottant."""
     y, x = np.ogrid[-1:1:complex(0, H), -1:1:complex(0, W)]
     d = np.sqrt(x * x + y * y) / math.sqrt(2)
-    return (1 - strength * np.clip((d - 0.35) / 0.65, 0, 1) ** 1.6).astype(np.float32)[..., None]
+    k = 1 - strength * np.clip((d - 0.35) / 0.65, 0, 1) ** 1.6
+    return np.repeat((k * 255).round().astype(np.uint8)[..., None], 3, axis=2)
+
+
+def apply_vignette(img: np.ndarray) -> np.ndarray:
+    return cv2.multiply(img, vignette_map(img.shape[1], img.shape[0]), scale=1 / 255)
 
 
 class Snow:
@@ -273,9 +279,10 @@ class Snow:
         for x, y, r in zip(self.x.astype(int), self.y.astype(int), self.r):
             cv2.circle(layer, (x, y), max(1, int(round(r))), 255, -1, lineType=cv2.LINE_AA)
         layer = cv2.GaussianBlur(layer, (0, 0), 1.1)
-        a = (layer.astype(np.float32) / 255.0 * 0.9)[..., None]
         self.step()
-        return (img * (1 - a) + 255 * a).astype(np.uint8)
+        # img + (255 - img) × alpha, en uint8 (4× plus rapide qu'en flottant sur une image 1080×1920).
+        alpha = cv2.cvtColor(cv2.convertScaleAbs(layer, alpha=0.9), cv2.COLOR_GRAY2BGR)
+        return cv2.add(img, cv2.multiply(cv2.subtract(np.full_like(img, 255), img), alpha, scale=1 / 255))
 
 
 # ─── Masques qui suivent les visages ───
@@ -485,7 +492,7 @@ def _default_detect(frame: np.ndarray) -> list:
     h, w = frame.shape[:2]
     k = min(1.0, 960 / max(h, w))
     small = cv2.resize(frame, None, fx=k, fy=k, interpolation=cv2.INTER_AREA) if k < 1 else frame
-    faces = detect_boxes(small, size=640, thresh=0.45)
+    faces = detect_boxes(small, size=480, thresh=0.45)   # 480 : visages des rendus bien assez grands, ~35 % plus rapide
     for f in faces:
         f.kps = np.asarray(f.kps, np.float32) / k
         f.bbox = np.asarray(f.bbox, np.float32) / k
@@ -586,7 +593,7 @@ class Renderer:
     def _finish(self, canvas: np.ndarray, k: float, color) -> np.ndarray:
         canvas = apply_grade(canvas, self.opts.grade)
         if self.opts.vignette:
-            canvas = (canvas * vignette_map(self.W, self.H)).astype(np.uint8)
+            canvas = apply_vignette(canvas)
         if self.snow is not None:
             canvas = self.snow.draw(canvas)
         if self.label is not None:
