@@ -73,7 +73,7 @@ masque de peau garde la mémoire de l'image précédente. Réglages : `levels.fa
 Niveau 3 : LivePortrait anime la tête d'une de tes photos (la plus de face, ou celle choisie à l'étape Visages) avec la
 pose et l'expression de la personne du clip. Ses cheveux, sa casquette et son casque sont effacés : le décor caché est
 reconstruit une fois par extrait à partir des autres images (plan fixe), LaMa (CPU) comblant ce qui n'est jamais
-visible. Le cou garde sa forme et prend ton teint (calcul du niveau 2). LivePortrait tourne sur le processeur
+visible ; quand la caméra bouge, LaMa reconstruit le décor image par image. Le cou garde sa forme et prend ton teint (calcul du niveau 2). LivePortrait tourne sur le processeur
 (~8 s par image) : sur une MX450, son générateur fait décrocher le pilote NVIDIA (délai de 2 s de Windows dépassé,
 écran noir). `levels.head.device: gpu` le remet sur la carte (~3× plus rapide) une fois ce délai relevé (`TdrDelay`).
 Réglages : `levels.head` dans `config.yaml`.

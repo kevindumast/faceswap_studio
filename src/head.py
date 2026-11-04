@@ -5,7 +5,7 @@
 - BiSeNet découpe la nouvelle tête, et l'ancienne avec ses accessoires (casquette, casque…) ;
 - le décor que cachait l'ancienne tête vient d'un fond propre reconstruit une fois pour l'extrait à partir des autres
   images (plan fixe : quand la tête bouge, le décor derrière se découvre). LaMa (CPU, ~4 s, DirectML le refuse) ne
-  comble que ce qui n'est jamais visible. Caméra qui bouge : effaceur rapide d'OpenCV, image par image ;
+  comble que ce qui n'est jamais visible. Caméra qui bouge : LaMa image par image ;
 - la nouvelle tête prend la lumière de la scène et le teint de la personne (calcul du niveau 2) ; le cou de la cible
   reçoit ce même teint.
 
@@ -44,7 +44,7 @@ SKIN_CORE = (P.SKIN, P.NOSE)
 TEMPLATE = np.array([[0.37691676, 0.46864664], [0.62285697, 0.46912813], [0.50123859, 0.61331904],
                      [0.39308822, 0.72541100], [0.61150205, 0.72490465]], np.float32)
 CROP = 512
-LP_MODELS = ("feature_extractor", "motion_extractor", "generator", "stitcher")
+LP_MODELS = ("feature_extractor", "motion_extractor", "generator", "stitcher")   # stitcher : téléchargé, inutilisé
 FILES = {name: f"live_portrait_{name}.onnx" for name in LP_MODELS} | {"lama": "lama_fp32.onnx"}
 MAX_COLOR = np.array([30.0, 15.0, 15.0], np.float32)   # correction de lumière / teint de la tête générée, au plus
 _lock = threading.Lock()
@@ -174,11 +174,10 @@ class SourceHead:
 
     @classmethod
     def from_path(cls, path: Path, scale: float) -> "SourceHead":
-        from .faces import detect
-        from .identity import read_image_full
+        from .identity import detect_photo, read_image_full
 
         img = read_image_full(path)
-        faces = detect(img) if img is not None else []
+        img, faces = detect_photo(img) if img is not None else (img, [])
         if not faces:
             raise RuntimeError(f"Aucun visage sur la photo choisie pour la tête ({path.name}).")
         return cls.from_photo(img, faces[0].kps, scale)
@@ -186,8 +185,10 @@ class SourceHead:
 
 def generate(source: SourceHead, target: Motion) -> np.ndarray:
     """La tête de la photo avec la pose, la taille, la position et l'expression de la cible (image 512 BGR)."""
+    # Pas de passage par le « stitcher » : avec ces exports ONNX, il ramène la tête vers la pose de la photo (points
+    # du visage généré à ~60-80 px de ceux de la cible sur un recadrage 512, contre 2-7 px sans lui). Il sert à
+    # raccorder les épaules du portrait animé, qu'on ne recolle de toute façon pas : seule la tête est gardée.
     driving = replace(target, points=source.motion.points).keypoints()
-    driving = run("stitcher", {"source": driving, "target": source.keypoints})[0]
     out = run("generator", {"feature_volume": source.feature, "source": driving, "target": source.keypoints})[0][0]
     return from_output(out)
 
@@ -205,11 +206,10 @@ def frontal_score(kps, bbox) -> float:
 
 def head_score(path: Path) -> float | None:
     """Note d'une photo pour la tête du niveau 3 (None : aucun visage)."""
-    from .faces import detect
-    from .identity import read_image
+    from .identity import detect_photo, read_image
 
     img = read_image(path) if path.is_file() else None
-    faces = detect(img) if img is not None else []
+    faces = detect_photo(img)[1] if img is not None else []
     return round(frontal_score(faces[0].kps, faces[0].bbox), 4) if faces else None
 
 
@@ -406,8 +406,10 @@ class HeadEngine:
         filled = dst
         if hole.any():
             hole = cv2.dilate(hole.astype(np.uint8), np.ones((7, 7), np.uint8))
-            background = plate if plate is not None else cv2.inpaint(
-                dst, cv2.dilate(old.astype(np.uint8), np.ones((15, 15), np.uint8)), 5, cv2.INPAINT_TELEA)
+            # Caméra qui bouge (pas de fond fixe) : LaMa reconstruit le décor sur cette image ; l'effaceur rapide
+            # d'OpenCV, lui, étale une bouillie grise sur un trou de la taille d'une tête.
+            background = plate if plate is not None else inpaint(
+                dst, cv2.dilate(old.astype(np.uint8), np.ones((15, 15), np.uint8)))
             hole_alpha = cv2.GaussianBlur(hole.astype(np.float32), (0, 0), 2.0) * (1 - alpha)
             filled = (background * hole_alpha[..., None] + dst * (1 - hole_alpha[..., None])).astype(np.uint8)
         a = alpha[..., None]

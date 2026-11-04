@@ -576,6 +576,8 @@ def main() -> None:
         from .assets import person_tone
 
         person.tone = person_tone(photos)
+        if person.tone is None:
+            print("! Teint introuvable (visage trop petit, ou photos en noir et blanc) : seul le visage est remplacé.")
     opts = RenderOptions(args.start, args.end, "full" if args.full else "segment",
                          stabilize=not args.no_stabilize, ai_label=not args.no_label, level=args.level,
                          limit_fps=args.limit_fps, restore=args.restore)

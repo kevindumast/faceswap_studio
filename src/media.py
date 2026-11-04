@@ -269,8 +269,10 @@ def assemble_segment(swapped: Path, cut: Path, dst: Path, has_audio: bool, label
     else:
         args += ["-map", "0:v"]
     if has_audio:
-        args += ["-map", "1:a:0", "-c:a", "copy"]
-    ffmpeg(*args, *_encode_args(crf, preset), "-shortest" if has_audio else "-an", str(dst))
+        # Son coupé à la longueur de l'image par -t, pas par -shortest : avec un réencodage, -shortest arrête la sortie
+        # dès la fin du son et perd les dernières images encore dans l'encodeur (3 images sur 25 pour un extrait d'1 s).
+        args += ["-map", "1:a:0", "-c:a", "copy", "-t", f"{probe(swapped).duration:.3f}"]
+    ffmpeg(*args, *_encode_args(crf, preset), *([] if has_audio else ["-an"]), str(dst))
 
 
 def assemble_full(source: Path, swapped: Path, dst: Path, info: VideoInfo, size: tuple[int, int], start: float,

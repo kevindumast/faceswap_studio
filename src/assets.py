@@ -3,8 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .faces import detect
-from .identity import read_image
+from .identity import detect_photo, read_image
 from .tone import ToneStats, source_tone
 
 
@@ -15,7 +14,7 @@ def person_tone(photos: list[Path]) -> ToneStats | None:
         img = read_image(path)
         if img is None:
             continue
-        found = detect(img)
+        img, found = detect_photo(img)
         if found:
             images.append(img)
             faces.append(found[0])

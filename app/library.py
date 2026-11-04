@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 
 from app import db
-from src.identity import SourceFace, analyze_photo, analyze_region, average_embedding, read_image_full
+from src.identity import SourceFace, analyze_photo, analyze_region, average_embedding, pad_tight, read_image_full
 from src.levels import CHARACTER, FACE_TONE, HEAD, PersonAssets
 
 # Similarité cosinus ArcFace : même personne ≈ 0,4–0,8 ; personnes différentes < 0,25.
@@ -157,6 +157,9 @@ def import_photo(raw: Path, original_name: str) -> dict:
     img = read_image_full(raw)
     if not result.ok or img is None:
         return {"ok": False, "name": original_name, "image": img}
+    if result.image is not None and result.image.shape[0] > img.shape[0]:
+        # Photo cadrée au ras du visage : on garde la version élargie, où tous les niveaux retrouvent le visage.
+        img = pad_tight(img)
     with _lock:
         pid = closest(result.embedding)
         created = pid is None
@@ -417,7 +420,8 @@ def assets(pid: str, level: str) -> PersonAssets:
         else:   # photos changées ou calcul du teint amélioré depuis
             out.tone = person_tone(out.photos)
             if out.tone is None:
-                raise RuntimeError(f"Teint introuvable sur les photos de {person['name']} (visage trop petit ou masqué).")
+                raise RuntimeError(f"Teint introuvable sur les photos de {person['name']} (visage trop petit ou masqué, "
+                                   "ou photos en noir et blanc) : ajoute une photo en couleur ou choisis le niveau 1.")
             cache.write_text(json.dumps({"key": key, "v": VERSION, "tone": out.tone.to_dict()}), encoding="utf-8")
     return out
 
