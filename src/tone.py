@@ -24,7 +24,7 @@ from . import parsing
 from .parsing import EXCLUDE_TONE, TONE_CLASSES
 
 MIN_PIXELS = 150
-VERSION = 2                 # calcul du teint source : invalide les tone.json de la bibliothèque quand il change
+VERSION = 3                 # calcul du teint source : invalide les tone.json de la bibliothèque quand il change
 NEUTRAL_MAX = 8.0           # dominante de l'éclairage retenue au plus (a/b, unités LAB 8 bits)
 DARK = (20.0, 60.0)         # L : aucune correction en dessous du 1er seuil, pleine correction au-dessus du 2e
 
@@ -46,7 +46,7 @@ class ToneStats:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict) -> "ToneStats":
+    def from_dict(cls, d: dict) -> ToneStats:
         neutral = d.get("neutral")
         return cls(np.array(d["mean"], np.float32), np.array(d["std"], np.float32),
                    None if neutral is None else np.array(neutral, np.float32))
@@ -64,7 +64,7 @@ class ToneSettings:
     hold: int = 6                # images où l'on garde le masque précédent si la peau n'est pas trouvée
 
     @classmethod
-    def from_config(cls, lcfg) -> "ToneSettings":
+    def from_config(cls, lcfg) -> ToneSettings:
         d = cls()
         return cls(strength_l=float(lcfg.get("tone_strength_l", d.strength_l)),
                    smoothing=float(lcfg.get("tone_smoothing", d.smoothing)),
@@ -167,14 +167,29 @@ def skin_regions(crop: np.ndarray, bbox, kps, labels: np.ndarray | None = None,
     return weights, core
 
 
+GRAY_CHROMA = 3.0           # chroma (a/b, LAB 8 bits) sous lequel un pixel est gris
+GRAY_SHARE = 0.98           # part de pixels gris à partir de laquelle une photo est en noir et blanc
+
+
+def is_grayscale(img: np.ndarray) -> bool:
+    """Photo en noir et blanc (ou sépia très léger) : elle ne dit rien du teint, qu'elle ferait virer au gris."""
+    scale = 256 / max(img.shape[:2])
+    small = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else img
+    ab = _lab(small).reshape(-1, 3)[:, 1:] - 128
+    return float((np.linalg.norm(ab, axis=1) < GRAY_CHROMA).mean()) >= GRAY_SHARE
+
+
 def source_tone(images: list[np.ndarray], faces: list) -> ToneStats | None:
     """Teint de référence d'une personne : médiane des teints de ses photos (et du visage principal de chacune).
 
     Mesuré photo par photo puis combiné : un gros tas de pixels de photos aux éclairages différents gonflait la
-    dispersion. Une photo au teint très éloigné des autres (lumière colorée, filtre) est écartée.
+    dispersion. Une photo au teint très éloigné des autres (lumière colorée, filtre) est écartée, de même qu'une photo
+    en noir et blanc (le visage deviendrait gris).
     """
     measures = []
     for img, face in zip(images, faces):
+        if is_grayscale(img):
+            continue
         bx1, by1, bx2, by2 = parsing.face_crop_box(face.bbox, img.shape)
         crop = img[by1:by2, bx1:bx2]
         if crop.size == 0:

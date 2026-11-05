@@ -18,6 +18,7 @@ def count_frames(path) -> int:
     return int(out.strip())
 
 
+@pytest.mark.models
 def test_pause_then_resume_gives_complete_video(sample_video, tmp_path):
     from src import media
     from src.identity import SourceFace
@@ -48,6 +49,7 @@ def test_pause_then_resume_gives_complete_video(sample_video, tmp_path):
     assert info.duration == pytest.approx(3.0, abs=0.05) and info.fps == pytest.approx(25)
 
 
+@pytest.mark.models
 def test_partial_preview_while_paused(sample_video, tmp_path):
     """En pause : ce qui est déjà rendu se revoit, avec le son d'origine, et disparaît une fois le rendu fini."""
     from src import media
@@ -78,6 +80,7 @@ def test_partial_preview_while_paused(sample_video, tmp_path):
     assert not list(tmp_path.glob("partial_*"))
 
 
+@pytest.mark.models
 def test_crash_resumes_from_last_saved_chunk(sample_video, tmp_path, monkeypatch):
     """Arrêt brutal (PC éteint) : on repart du dernier morceau refermé, sans image en double ni manquante."""
     from src import media
@@ -132,6 +135,7 @@ def _job(client, video, set_id, pid, **extra):
                                           "mappings": [{"t": 1, "box": [0.1, 0.1, 0.3, 0.4], "person": pid}], **extra}).json()
 
 
+@pytest.mark.models
 def test_pause_resume_api(client, ready_video, make_session):
     set_id, ids = make_session({"Kevin": [np.ones(512)]})
     job = _job(client, ready_video, set_id, ids["Kevin"])

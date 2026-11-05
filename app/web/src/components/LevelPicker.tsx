@@ -68,7 +68,14 @@ export function LevelPicker({ value, onChange, status }: { value: Level; onChang
                 <span className={cx("flex size-9 items-center justify-center rounded-xl", on ? "bg-accent text-accent-ink" : "bg-raised text-muted group-hover:text-fg")}>
                   {ICONS[lvl.id]}
                 </span>
-                <span className="font-mono text-[11px] text-faint">Niv. {lvl.step}</span>
+                <span className="flex items-center gap-2">
+                  <span className={cx("font-mono text-[11px]", on ? "text-accent" : "text-faint")}>Niv. {lvl.step}</span>
+                  {on && (
+                    <span className="flex size-5 items-center justify-center rounded-full bg-accent text-accent-ink">
+                      <Check className="size-3.5" strokeWidth={3} />
+                    </span>
+                  )}
+                </span>
               </div>
               <div>
                 <div className="font-medium">{lvl.title}</div>
@@ -91,11 +98,6 @@ export function LevelPicker({ value, onChange, status }: { value: Level; onChang
                 )}
                 {!available && <Badge tone="muted">Bientôt</Badge>}
               </div>
-              {on && (
-                <span className="absolute top-3 right-3 hidden size-5 items-center justify-center rounded-full bg-accent text-accent-ink sm:flex">
-                  <Check className="size-3.5" strokeWidth={3} />
-                </span>
-              )}
             </button>
           );
         })}

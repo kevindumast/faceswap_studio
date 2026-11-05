@@ -20,6 +20,27 @@ def test_cut_is_frame_accurate(sample_video, tmp_path):
     assert cut.duration == pytest.approx(5.0, abs=1 / 25 + 0.03)  # ±1 image (+ marge conteneur audio)
 
 
+def _frames(path) -> int:
+    out = media.run([media.binary("ffprobe"), "-v", "error", "-count_frames", "-select_streams", "v",
+                     "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", str(path)]).stdout
+    return int(out.strip())
+
+
+@pytest.mark.parametrize("label", [False, True])
+def test_assemble_segment_keeps_every_frame(sample_video, tmp_path, label):
+    """Son remis sur l'extrait swappé : aucune image perdue à la fin (-shortest en perdait 3 sur 25)."""
+    info = media.probe(sample_video)
+    cut = tmp_path / "cut.mp4"
+    media.cut_segment(sample_video, cut, 1.0, 2.0, (640, 360), info.has_audio)
+    swapped = tmp_path / "swapped.mp4"
+    media.ffmpeg("-i", str(cut), "-an", "-c:v", "libx264", "-preset", "veryfast", str(swapped))
+    png = media.render_label(tmp_path / "label.png", 360) if label else None
+    out = tmp_path / "out.mp4"
+    media.assemble_segment(swapped, cut, out, True, png, 18, "veryfast")
+    assert _frames(out) == _frames(swapped) == 25
+    assert media.probe(out).has_audio
+
+
 def test_proxy_and_filmstrip(sample_video, tmp_path):
     info = media.probe(sample_video)
     seen = []

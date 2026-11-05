@@ -166,6 +166,7 @@ def test_recompute_only_touches_chosen_frames(sample_video, tmp_path, monkeypatc
     assert len(means) == 25 and min(means) > 245                                # la copie (image 3) suit aussi
 
 
+@pytest.mark.models
 def test_plan_recorded_by_swap_segment_and_resumed(sample_video, tmp_path):
     """Le journal suit le rendu image par image, y compris après une pause (jamais plus court que les morceaux)."""
     from src import media
@@ -206,6 +207,7 @@ def client():
         yield c
 
 
+@pytest.mark.models
 def test_review_api_flow(client, sample_video, make_session):
     """En vérification : analyse, choix → recalcul (worker), retour, assemblage refusé tant que tout n'est pas calculé."""
     import time
@@ -254,7 +256,16 @@ def test_review_api_flow(client, sample_video, make_session):
     assert client.get(f"/api/jobs/{job['id']}").json()["reviewable"] is True
     assert client.post(f"/api/jobs/{job['id']}/reopen").json()["status"] == "review"
     client.post(f"/api/jobs/{job['id']}/cancel")
-    assert client.get(f"/api/jobs/{job['id']}").json()["status"] == "cancelled"
+    assert client.get(f"/api/jobs/{job['id']}").json()["status"] == "cancelled"     # pas de vidéo assemblée
+
+    # Rendu terminé (vidéo assemblée) rouvert pour être revu : elle reste téléchargeable, et quitter la vérification
+    # le rend tel quel au lieu de l'annuler.
+    db.update("jobs", job["id"], status="done")
+    (db.folder("jobs", job["id"]) / "result.mp4").write_bytes(b"mp4")
+    reopened = client.post(f"/api/jobs/{job['id']}/reopen").json()
+    assert reopened["status"] == "review" and reopened["result_url"]
+    kept = client.post(f"/api/jobs/{job['id']}/cancel").json()
+    assert kept["status"] == "done" and kept["result_url"]
 
 
 def test_removal_starts_again_from_the_original(sample_video, tmp_path, monkeypatch):

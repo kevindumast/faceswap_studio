@@ -23,6 +23,7 @@ class PhotoResult:
     ok: bool
     crop: np.ndarray | None = None
     embedding: np.ndarray | None = None
+    image: np.ndarray | None = None    # image analysée (avec une marge ajoutée si la photo était cadrée trop serré)
 
 
 def read_image_full(path: Path) -> np.ndarray | None:
@@ -38,6 +39,31 @@ def read_image(path: Path) -> np.ndarray | None:
         scale = 1600 / max(img.shape[:2])
         img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
     return img
+
+
+PAD = 0.5   # marge ajoutée autour d'une photo cadrée serré (fraction du plus grand côté)
+
+
+def pad_tight(img: np.ndarray) -> np.ndarray:
+    """Photo cadrée au ras du visage (avatar, selfie recadré, visage déjà aligné 112 px) : le détecteur, entraîné sur
+    des visages entourés de décor, n'y trouve rien. Une marge recopiée des bords lui rend le contexte attendu."""
+    b = max(8, int(round(max(img.shape[:2]) * PAD)))
+    return cv2.copyMakeBorder(img, b, b, b, b, cv2.BORDER_REPLICATE)
+
+
+def detect_photo(img: np.ndarray, detector=None) -> tuple[np.ndarray, list]:
+    """Visages d'une photo de personne, avec un second essai sur la photo élargie si rien n'est trouvé.
+
+    Renvoie l'image réellement analysée (élargie ou non) : boîtes et points clés sont dans son repère.
+    """
+    from .faces import detect
+
+    detector = detector or detect
+    faces = detector(img)
+    if faces:
+        return img, faces
+    padded = pad_tight(img)
+    return padded, detector(padded)
 
 
 def _detect_tolerant(frame: np.ndarray, thresh: float | None = None) -> list:
@@ -61,11 +87,11 @@ def analyze_photo(path: Path) -> PhotoResult:
     img = read_image(path)
     if img is None:
         return PhotoResult(path, ok=False)
-    faces = _detect_tolerant(img)
+    img, faces = detect_photo(img, _detect_tolerant)
     if not faces:
         return PhotoResult(path, ok=False)
     face = faces[0]  # le plus grand visage de la photo
-    return PhotoResult(path, ok=True, crop=face_crop(img, face.bbox), embedding=face.normed_embedding)
+    return PhotoResult(path, ok=True, crop=face_crop(img, face.bbox), embedding=face.normed_embedding, image=img)
 
 
 def analyze_region(path: Path, box: tuple[float, float, float, float]) -> PhotoResult:

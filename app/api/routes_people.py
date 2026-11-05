@@ -40,7 +40,7 @@ def _load(pid: str) -> dict:
     try:
         return library.load(pid)
     except library.PersonNotFound:
-        raise not_found("Personne")
+        raise not_found("Personne") from None
 
 
 @router.get("")
@@ -107,7 +107,7 @@ def assign_pending(rid: str, body: AssignPendingIn) -> dict:
     try:
         person = library.assign_pending(rid, body.box, body.target, body.name)
     except library.PersonNotFound:
-        raise not_found("Photo en attente")
+        raise not_found("Photo en attente") from None
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     return library.public(person)
@@ -143,7 +143,7 @@ def move_photo(pid: str, photo_id: str, body: MoveIn) -> dict:
     try:
         dest = library.move_photo(pid, photo_id, body.person)
     except library.PersonNotFound:
-        raise not_found("Photo")
+        raise not_found("Photo") from None
     return {"moved_to": dest, "source_exists": library.exists(pid)}
 
 

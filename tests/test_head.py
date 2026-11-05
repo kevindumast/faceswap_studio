@@ -158,3 +158,32 @@ def test_head_level_is_refused_with_the_gpu_option():
     with pytest.raises(HTTPException) as err:
         check_level("head", use_gpu=True, active_mappings=1)
     assert "carte graphique" in err.value.detail
+
+
+def test_generator_is_driven_by_the_target_pose(monkeypatch):
+    """La tête générée suit la pose de la cible : points de pilotage passés tels quels au générateur (le stitcher
+    ramenait la tête vers la pose de la photo, à 60-80 px de la cible sur un recadrage 512)."""
+    calls = []
+
+    def run(name, feed):
+        calls.append(name)
+        return [np.zeros((1, 3, 512, 512), np.float32)]
+
+    monkeypatch.setattr(head, "run", run)
+    pts = np.random.default_rng(0).normal(size=(1, 21, 3)).astype(np.float32)
+    src_motion, tgt_motion = head.replace(_motion(0.0), points=pts), _motion(25.0)
+    source = head.SourceHead(np.zeros((1, 32, 16, 64, 64), np.float32), src_motion, src_motion.keypoints())
+    seen = {}
+    original = head.run
+
+    def spy(name, feed):
+        if name == "generator":
+            seen.update(feed)
+        return original(name, feed)
+
+    monkeypatch.setattr(head, "run", spy)
+    head.generate(source, tgt_motion)
+    assert "stitcher" not in calls
+    expected = head.replace(tgt_motion, points=src_motion.points).keypoints()
+    assert np.allclose(seen["source"], expected) and np.allclose(seen["target"], source.keypoints)
+    assert not np.allclose(expected, source.keypoints)                   # la pose de la cible change bien les points

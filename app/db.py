@@ -44,6 +44,17 @@ CREATE TABLE IF NOT EXISTS jobs (
     started_at REAL,
     finished_at REAL
 );
+CREATE TABLE IF NOT EXISTS montages (
+    id TEXT PRIMARY KEY,
+    title TEXT,
+    params TEXT NOT NULL,            -- JSON : séquences (rendus + légendes) et options
+    status TEXT NOT NULL,            -- queued | running | cancelling | cancelled | done | error
+    progress REAL DEFAULT 0,
+    error TEXT,
+    info TEXT,                       -- JSON : durée, taille
+    created_at REAL NOT NULL,
+    finished_at REAL
+);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
 

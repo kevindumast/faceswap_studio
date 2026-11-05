@@ -120,6 +120,7 @@ render:
   swap_color_smoothing: 0.8    # lissage de cette correction d'une image à l'autre
   swap_mask_erode: 0.1         # bord du visage collé : marge retirée (fraction du visage aligné)…
   swap_mask_blur: 0.02         # … et adoucissement (0.02 ≈ recollage d'origine d'insightface ; plus = bord plus doux)
+  occlusion_mask: true         # main, verre, micro devant le visage : gardés (segmentation du niveau 2 si installée)
   restore_device: cpu          # option « netteté » (niveaux 1 et 2) : cpu = stable ; gpu = plus rapide mais cohabite
                                 # avec le swap sur la même carte (risqué sur une carte à mémoire juste, cf. niveau 3)
   restore_fidelity: 0.5        # 0 = très retouché (plus net, peut s'éloigner un peu du visage d'origine), 1 = fidèle

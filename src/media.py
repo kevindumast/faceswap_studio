@@ -8,7 +8,7 @@ import shutil
 import subprocess
 from dataclasses import asdict, dataclass
 from fractions import Fraction
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 from typing import Callable
 
@@ -25,7 +25,7 @@ class MediaError(RuntimeError):
     pass
 
 
-@lru_cache(maxsize=None)
+@cache
 def binary(name: str) -> str:
     """Résout ffmpeg / ffprobe : config, PATH, puis dossier d'installation winget."""
     configured = load_config().get(name, name)
@@ -224,7 +224,7 @@ class FrameWriter:
             pass
         self.proc.kill()
 
-    def __enter__(self) -> "FrameWriter":
+    def __enter__(self) -> FrameWriter:
         return self
 
     def __exit__(self, exc_type, *_):
@@ -269,8 +269,10 @@ def assemble_segment(swapped: Path, cut: Path, dst: Path, has_audio: bool, label
     else:
         args += ["-map", "0:v"]
     if has_audio:
-        args += ["-map", "1:a:0", "-c:a", "copy"]
-    ffmpeg(*args, *_encode_args(crf, preset), "-shortest" if has_audio else "-an", str(dst))
+        # Son coupé à la longueur de l'image par -t, pas par -shortest : avec un réencodage, -shortest arrête la sortie
+        # dès la fin du son et perd les dernières images encore dans l'encodeur (3 images sur 25 pour un extrait d'1 s).
+        args += ["-map", "1:a:0", "-c:a", "copy", "-t", f"{probe(swapped).duration:.3f}"]
+    ffmpeg(*args, *_encode_args(crf, preset), *([] if has_audio else ["-an"]), str(dst))
 
 
 def assemble_full(source: Path, swapped: Path, dst: Path, info: VideoInfo, size: tuple[int, int], start: float,

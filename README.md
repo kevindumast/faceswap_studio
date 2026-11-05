@@ -62,6 +62,8 @@ Choisis à l'étape « Visages ». Tout tourne sur ton CPU ; le GPU (ZeroGPU) es
 
 Niveau 1 : le visage généré (128 px) est recollé avec un bord adouci, et sa couleur est ramenée sur celle du visage
 d'origine (écart lissé d'une image à l'autre) : plus de visage grisé qui clignote de profil.
+Si la segmentation du niveau 2 est installée, ce qui passe devant le visage (main, verre, micro, mèche) est gardé :
+le visage généré n'est recollé que sur le visage réellement visible (`render.occlusion_mask`).
 
 Niveau 2 : la zone recolorée combine la segmentation, une zone autour du visage (ellipse + cou) et un filtre couleur
 calé sur le cœur du visage, pour ne jamais teinter la chemise ou le décor. Yeux, bouche, lunettes, cheveux et bijoux
@@ -73,7 +75,7 @@ masque de peau garde la mémoire de l'image précédente. Réglages : `levels.fa
 Niveau 3 : LivePortrait anime la tête d'une de tes photos (la plus de face, ou celle choisie à l'étape Visages) avec la
 pose et l'expression de la personne du clip. Ses cheveux, sa casquette et son casque sont effacés : le décor caché est
 reconstruit une fois par extrait à partir des autres images (plan fixe), LaMa (CPU) comblant ce qui n'est jamais
-visible. Le cou garde sa forme et prend ton teint (calcul du niveau 2). LivePortrait tourne sur le processeur
+visible ; quand la caméra bouge, LaMa reconstruit le décor image par image. Le cou garde sa forme et prend ton teint (calcul du niveau 2). LivePortrait tourne sur le processeur
 (~8 s par image) : sur une MX450, son générateur fait décrocher le pilote NVIDIA (délai de 2 s de Windows dépassé,
 écran noir). `levels.head.device: gpu` le remet sur la carte (~3× plus rapide) une fois ce délai relevé (`TdrDelay`).
 Réglages : `levels.head` dans `config.yaml`.
@@ -106,6 +108,22 @@ visage est recherché à la position attendue, sinon ses points clés sont inter
 et l'étiquette. Un rendu terminé se rouvre avec « Revoir les images ». Réglages : `review` dans `config.yaml`.
 
 Pas encore avec l'option GPU (ZeroGPU) ni au niveau 4 : le détail image par image reste sur le Space.
+
+## Montage (TikTok, Reels, Shorts)
+
+Bouton « Montage » en haut de l'appli : enchaîne plusieurs rendus terminés en une seule vidéo à partager.
+
+- **Formats** : vertical 9:16 (1080×1920), carré 1:1 ou horizontal 16:9 ; vidéo entière sur **fond flouté**, ou
+  **plein cadre** qui suit les visages.
+- **Masques qui suivent les visages** : bonnet de Père Noël, bois et nez de renne, nez rouge (dessinés par l'appli,
+  posés sur chaque visage et lissés d'une image à l'autre).
+- **Effets** : neige, filtres (chaleureux, ciné, vintage, noir et blanc), vignettage, zoom lent.
+- **Écran titre**, **légende par séquence** (« Papa en Rocky »), **message de fin**, transitions fondu / flash / coupe.
+- **Musique de fond** (mp3, m4a, wav…) : bouclée, fondue à la fin, et qui baisse toute seule quand quelqu'un parle.
+- Ambiances en un clic : « Noël en famille », « Rennes et nez rouges », « Bande-annonce » ; bouton « Aperçu » pour
+  juger le rendu sur une image avant de lancer le calcul (~4× la durée du montage sur un i7).
+
+Code : `src/montage.py` (image et son), `app/api/routes_montages.py`, `app/web/src/components/MontageStudio.tsx`.
 
 ## En ligne de commande (sans l'appli)
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import time
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -16,7 +15,7 @@ from src.config import ROOT, load_config
 from src.hardware import engine_status
 from src.levels import FACE
 
-from . import routes_faces, routes_jobs, routes_models, routes_people, routes_settings, routes_videos
+from . import routes_faces, routes_jobs, routes_models, routes_montages, routes_people, routes_settings, routes_videos
 
 WEB_DIST = ROOT / "app" / "web" / "dist"
 
@@ -31,6 +30,7 @@ async def lifespan(_: FastAPI):
     for group in routes_models.GROUP_MB:  # téléchargements de modèles interrompus
         if db.get_meta(f"download:{group}"):
             db.set_meta(f"download:{group}", "")
+    routes_montages.resume_interrupted()
     # Aucun nettoyage automatique : vidéos, rendus et visages restent jusqu'à ce que l'utilisateur les supprime.
     yield
 
@@ -39,6 +39,7 @@ app = FastAPI(title="Faceswap Studio", lifespan=lifespan)
 app.include_router(routes_videos.router)
 app.include_router(routes_faces.router)
 app.include_router(routes_jobs.router)
+app.include_router(routes_montages.router)
 app.include_router(routes_models.router)
 app.include_router(routes_people.router)
 app.include_router(routes_settings.router)
